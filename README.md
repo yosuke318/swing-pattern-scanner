@@ -45,7 +45,9 @@ uv run swing-scanner validate-config
 
 ## 設定ファイルの決まり
 
-- `symbols.yaml` の `symbol` は数字だけのコードでも文字列で書く（`"7203"`）。同じ市場・同じコードの重複はエラー。
+- `symbols.yaml` の `symbol` は、日本株は4桁のコードを文字列で書く（`"7203"`）。米国株はティッカー（`BRK.B` など）。形式違いと、同じ市場・同じコードの重複はエラー。
+- 監視銘柄の追加は行を足してコミットする（GitHub の Web 編集でもよい）。除外は行を消さず `watched: false` にする。
+- 指数ETF（1306 / SPY）は `symbols.yaml` に入れず、`settings.yaml` の `markets.<市場>.benchmark_symbol` で持つ。通知対象にはしない。
 - `events.yaml` には `symbols.yaml` にある銘柄だけを書ける。
 - パターン定義のファイル名は `v<version>.yaml`、ディレクトリ名は `pattern_id` と一致させる。同じ `pattern_id` で `active: true` は1バージョンだけ。
 - `conditions` の `weight` の合計は 100。`between` の `value` は `[下限, 上限]`、真偽値は `==` / `!=` でだけ比べる。

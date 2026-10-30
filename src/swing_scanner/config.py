@@ -41,6 +41,19 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+# 日本株は4桁の銘柄コード（2024年以降の英字入りコード "130A" なども含む）。
+# J-Quants の5桁コードとの変換は取得層で吸収する。米国株は Alpaca のティッカー（"BRK.B" など）
+_SYMBOL_FORMATS: dict[str, re.Pattern[str]] = {
+    "JP": re.compile(r"^[0-9][0-9A-Z][0-9][0-9A-Z]$"),
+    "US": re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$"),
+}
+
+
+def _check_symbol_format(market: str, symbol: str) -> None:
+    if not _SYMBOL_FORMATS[market].match(symbol):
+        raise ValueError(f"{market} の銘柄コードとして不正です: {symbol!r}")
+
+
 # --- settings.yaml ---------------------------------------------------------
 
 
@@ -50,7 +63,8 @@ class FetchSettings(_Model):
 
 class MarketSettings(_Model):
     min_trading_value_20d: Annotated[Number, Field(ge=0)]
-    index_symbol: StrictStr
+    # 市場環境フィルタと相対強度に使う指数ETF。監視銘柄とは別枠で、通知対象にはしない
+    benchmark_symbol: StrictStr
 
 
 class ScoringSettings(_Model):
@@ -83,6 +97,8 @@ class Settings(_Model):
         missing = {"JP", "US"} - set(self.markets)
         if missing:
             raise ValueError(f"markets に {sorted(missing)} の設定がありません")
+        for market, m in self.markets.items():
+            _check_symbol_format(market, m.benchmark_symbol)
         return self
 
 
@@ -94,6 +110,11 @@ class Symbol(_Model):
     name: StrictStr
     market: Market
     watched: StrictBool
+
+    @model_validator(mode="after")
+    def _symbol_format(self) -> Symbol:
+        _check_symbol_format(self.market, self.symbol)
+        return self
 
 
 # --- events.yaml -----------------------------------------------------------
@@ -270,6 +291,11 @@ def load_config(config_dir: Path) -> Config:
         if key in seen:
             raise ConfigError(f"{symbols_path}: 銘柄が重複しています: {s.market} {s.symbol}")
         seen.add(key)
+        if s.watched and s.symbol == settings.markets[s.market].benchmark_symbol:
+            raise ConfigError(
+                f"{symbols_path}: {s.market} {s.symbol} はベンチマークです。"
+                "settings.yaml の benchmark_symbol で持ち、監視銘柄には入れないでください"
+            )
     for e in events:
         if (e.market, e.symbol) not in seen:
             raise ConfigError(

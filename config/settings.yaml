@@ -9,12 +9,12 @@ markets:
   JP:
     # 20日平均売買代金の下限（円）。これ未満は流動性フィルタで除外する
     min_trading_value_20d: 100000000
-    # 市場環境フィルタと相対強度に使う指数ETF
-    index_symbol: "1306"
+    # 市場環境フィルタと相対強度に使う指数ETF（ベンチマーク）。監視銘柄とは別枠で、通知対象にはしない
+    benchmark_symbol: "1306"
   US:
     # 20日平均売買代金の下限（ドル）
     min_trading_value_20d: 10000000
-    index_symbol: SPY
+    benchmark_symbol: SPY
 
 scoring:
   # パターン定義に score_threshold が無いときの既定値

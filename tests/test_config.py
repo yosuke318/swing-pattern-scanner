@@ -46,6 +46,15 @@ def test_default_score_threshold_is_used_when_pattern_omits_it(config_dir: Path)
         ("symbols.yaml", lambda d: d[0].update(symbol=7203), "symbol"),
         ("symbols.yaml", lambda d: d.append(dict(d[0])), "重複"),
         ("symbols.yaml", lambda d: d[0].update(market="HK"), "market"),
+        ("symbols.yaml", lambda d: d[0].update(symbol="72030"), "銘柄コード"),
+        ("symbols.yaml", lambda d: d[0].update(symbol="NVDA"), "銘柄コード"),
+        ("symbols.yaml", lambda d: d[-1].update(symbol="nvda"), "銘柄コード"),
+        ("symbols.yaml", lambda d: d.append({**d[0], "symbol": "1306"}), "ベンチマーク"),
+        (
+            "settings.yaml",
+            lambda d: d["markets"]["US"].update(benchmark_symbol="spy"),
+            "銘柄コード",
+        ),
     ],
 )
 def test_invalid_config_is_rejected(config_dir: Path, relpath, mutate, message):
@@ -105,3 +114,32 @@ def test_pattern_file_name_must_be_versioned(config_dir: Path):
     shutil.copy(config_dir / PATTERN, config_dir / "patterns/golden_cross_uptrend/latest.yaml")
     with pytest.raises(ConfigError, match="v<番号>.yaml"):
         load_config(config_dir)
+
+
+def test_watched_symbols_by_market(config_dir: Path):
+    def mutate(d):
+        d[0]["watched"] = False  # 7203 を除外
+        d.append({"symbol": "130A", "name": "英字入り", "market": "JP", "watched": True})
+        d.append({"symbol": "BRK.B", "name": "Berkshire B", "market": "US", "watched": True})
+        # 除外済みならベンチマークと同じコードでも可
+        d.append({"symbol": "SPY", "name": "SPDR S&P 500", "market": "US", "watched": False})
+
+    _edit(config_dir / "symbols.yaml", mutate)
+    config = load_config(config_dir)
+
+    jp = [s.symbol for s in config.watched_symbols("JP")]
+    us = [s.symbol for s in config.watched_symbols("US")]
+    assert "7203" not in jp
+    assert "130A" in jp
+    assert all(s.market == "JP" for s in config.watched_symbols("JP"))
+    assert "BRK.B" in us
+    assert "SPY" not in us
+    assert not set(jp) & set(us)
+
+
+def test_repo_symbols_cover_both_markets():
+    config = load_config(REPO_CONFIG)
+    assert config.watched_symbols("JP")
+    assert config.watched_symbols("US")
+    assert config.settings.markets["JP"].benchmark_symbol == "1306"
+    assert config.settings.markets["US"].benchmark_symbol == "SPY"
