@@ -43,6 +43,18 @@ uv run ruff check . && uv run ruff format --check .
 uv run swing-scanner validate-config
 ```
 
+## 日次実行
+
+```bash
+uv run swing-scanner run --market JP              # 対象日は現地時刻で直近に引けた日
+uv run swing-scanner run --market US --date 2026-11-02   # 対象日を指定（手動実行）
+```
+
+- 実行の先頭で取引カレンダー（日本株は J-Quants、米国株は Alpaca）を引き、対象日が休場日なら `runs.csv` に `skipped_holiday` を記録して正常終了する。休場日リストは自前で持たない。
+- 米国株は日本時間の翌朝に動くので、対象日は NY 時間の日付になる。日本の祝日でも米国株は通常どおり判定する。
+- カレンダーを取得・解釈できなければ異常終了する。
+- 認証情報は環境変数から読む。J-Quants は `JQUANTS_API_KEY`（v2）、または `JQUANTS_REFRESH_TOKEN` か `JQUANTS_MAIL` + `JQUANTS_PASSWORD`（v1）。Alpaca は `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`。
+
 ## 設定ファイルの決まり
 
 - `symbols.yaml` の `symbol` は、日本株は4桁のコードを文字列で書く（`"7203"`）。米国株はティッカー（`BRK.B` など）。形式違いと、同じ市場・同じコードの重複はエラー。
