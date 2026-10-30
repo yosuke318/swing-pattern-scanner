@@ -1,0 +1,10 @@
+# 監視銘柄。監視をやめるときは削除せず watched: false にする（過去の判定ログと突き合わせるため）。
+# symbol は数字だけのコードでも必ず文字列で書く（"7203"）。
+- symbol: "7203"
+  name: トヨタ自動車
+  market: JP
+  watched: true
+- symbol: NVDA
+  name: NVIDIA
+  market: US
+  watched: true

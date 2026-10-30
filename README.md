@@ -1,0 +1,58 @@
+# swing-pattern-scanner
+
+日足OHLCVから短期スイング向けの「良い形」の銘柄をルールで検知し、出口の目安付きでメール／LINEに通知する個人用バッチ。GitHub Actions で動かし、DB は使わない。
+
+要件と設計は Linear のプロジェクト「投資判断支援ツール」にある要件定義書 v2.0・基本設計書 v2.0 を参照。
+
+## ディレクトリ構成
+
+```text
+config/
+  settings.yaml         取得日数・流動性下限・スコアしきい値・クールダウン・通知・市場環境フィルタ
+  symbols.yaml          監視銘柄（外すときは watched: false）
+  events.yaml           決算日など（手動登録）
+  patterns/<pattern_id>/v<n>.yaml   パターン定義（過去バージョンも残す）
+state/                  日次実行で更新しコミットする
+  notified.json         通知履歴 "<symbol>|<pattern_id>" → 最終通知日
+  runs.csv              実行ログ
+  results/YYYY-MM.csv   判定ログ（判定対象日の月別）
+reports/backtest/       バックテスト結果
+.cache/                 バックテスト用の過去データ（コミットしない）
+src/swing_scanner/      コード
+```
+
+## 開発
+
+[uv](https://docs.astral.sh/uv/) を使う。
+
+```bash
+uv sync
+```
+
+```bash
+uv run pytest
+```
+
+```bash
+uv run ruff check . && uv run ruff format --check .
+```
+
+設定ファイルを書き換えたら、スキーマ検証を通す。不正な設定（必須項目の欠落、型違い、未知のキー）はエラーになる。
+
+```bash
+uv run swing-scanner validate-config
+```
+
+## 設定ファイルの決まり
+
+- `symbols.yaml` の `symbol` は数字だけのコードでも文字列で書く（`"7203"`）。同じ市場・同じコードの重複はエラー。
+- `events.yaml` には `symbols.yaml` にある銘柄だけを書ける。
+- パターン定義のファイル名は `v<version>.yaml`、ディレクトリ名は `pattern_id` と一致させる。同じ `pattern_id` で `active: true` は1バージョンだけ。
+- `conditions` の `weight` の合計は 100。`between` の `value` は `[下限, 上限]`、真偽値は `==` / `!=` でだけ比べる。
+- `score_threshold` を省略したパターンは `settings.yaml` の `scoring.default_score_threshold` を使う。
+- 寄り付きの窓開けでエントリーを見送るしきい値（g×ATR）は `exit.skip_gap_atr_mult` に書く。省略時は見送らない。
+- 認証情報と通知先のアドレス・トークンは GitHub Actions Secrets に置き、リポジトリには書かない。
+
+## 状態ファイルの書き込み
+
+日本株と米国株のジョブはどちらも同じ `state/` を書く。ファイルを市場別に分けず、ワークフローの `concurrency` を共通のグループにして直列化する。

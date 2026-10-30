@@ -1,0 +1,279 @@
+"""config/ 配下の設定ファイルを読み込み、スキーマ検証する。
+
+不正な設定は起動時に ConfigError で止める。必須項目の欠落、型違い、未知のキーはすべてエラー。
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import re
+from collections import defaultdict
+from pathlib import Path
+from typing import Annotated, Any, Literal
+
+import yaml
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    model_validator,
+)
+
+Market = Literal["JP", "US"]
+VolRegime = Literal["low", "normal", "high"]
+TrendRegime = Literal["uptrend", "range", "downtrend"]
+
+PositiveInt = Annotated[StrictInt, Field(gt=0)]
+PositiveFloat = Annotated[StrictFloat | StrictInt, Field(gt=0)]
+Number = StrictFloat | StrictInt
+
+
+class ConfigError(Exception):
+    """設定ファイルの読み込み・検証の失敗。"""
+
+
+class _Model(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+# --- settings.yaml ---------------------------------------------------------
+
+
+class FetchSettings(_Model):
+    lookback_days: PositiveInt
+
+
+class MarketSettings(_Model):
+    min_trading_value_20d: Annotated[Number, Field(ge=0)]
+    index_symbol: StrictStr
+
+
+class ScoringSettings(_Model):
+    default_score_threshold: Annotated[Number, Field(ge=0, le=100)]
+
+
+class ChannelSettings(_Model):
+    enabled: StrictBool
+
+
+class NotificationSettings(_Model):
+    cooldown_business_days: Annotated[StrictInt, Field(ge=0)]
+    email: ChannelSettings
+    line: ChannelSettings
+
+
+class MarketFilterSettings(_Model):
+    mode: Literal["off", "annotate", "suppress"]
+
+
+class Settings(_Model):
+    fetch: FetchSettings
+    markets: dict[Market, MarketSettings]
+    scoring: ScoringSettings
+    notification: NotificationSettings
+    market_filter: MarketFilterSettings
+
+    @model_validator(mode="after")
+    def _all_markets_present(self) -> Settings:
+        missing = {"JP", "US"} - set(self.markets)
+        if missing:
+            raise ValueError(f"markets に {sorted(missing)} の設定がありません")
+        return self
+
+
+# --- symbols.yaml ----------------------------------------------------------
+
+
+class Symbol(_Model):
+    symbol: StrictStr
+    name: StrictStr
+    market: Market
+    watched: StrictBool
+
+
+# --- events.yaml -----------------------------------------------------------
+
+
+class Event(_Model):
+    symbol: StrictStr
+    market: Market
+    date: dt.date
+    type: Literal["earnings", "other"]
+    note: StrictStr | None = None
+
+
+# --- patterns/<pattern_id>/v<n>.yaml ---------------------------------------
+
+Op = Literal["<", "<=", ">", ">=", "==", "!=", "between"]
+
+
+class Condition(_Model):
+    key: StrictStr
+    op: Op
+    value: StrictBool | Number | list[Number]
+    weight: Annotated[Number, Field(gt=0)]
+
+    @model_validator(mode="after")
+    def _value_matches_op(self) -> Condition:
+        if self.op == "between":
+            if not isinstance(self.value, list) or len(self.value) != 2:
+                raise ValueError(f"{self.key}: between の value は [下限, 上限] で書いてください")
+            low, high = self.value
+            if low > high:
+                raise ValueError(f"{self.key}: between の下限が上限より大きいです")
+        elif isinstance(self.value, list):
+            raise ValueError(f"{self.key}: {self.op} の value にリストは使えません")
+        elif isinstance(self.value, bool) and self.op not in ("==", "!="):
+            raise ValueError(f"{self.key}: 真偽値の比較には == か != を使ってください")
+        return self
+
+
+class Regimes(_Model):
+    vol: Annotated[list[VolRegime], Field(min_length=1)]
+    trend: Annotated[list[TrendRegime], Field(min_length=1)]
+
+
+class StopRule(_Model):
+    # swing_low_or_atr: 直近スイング安値割れとエントリー − k×ATR のうち浅い方
+    type: Literal["swing_low_or_atr", "atr"]
+    atr_mult: PositiveFloat
+
+
+class TargetRule(_Model):
+    atr_mult: PositiveFloat
+
+
+class ExitRule(_Model):
+    stop: StopRule
+    target: TargetRule
+    max_holding_days: PositiveInt
+    # 寄り付きが前日終値 + g×ATR 以上ならエントリーを見送る。省略時は見送らない
+    skip_gap_atr_mult: PositiveFloat | None = None
+
+
+class Pattern(_Model):
+    pattern_id: Annotated[StrictStr, Field(pattern=r"^[a-z0-9_]+$")]
+    version: PositiveInt
+    name: StrictStr
+    category: Literal["trend", "breakout", "pullback", "squeeze"]
+    active: StrictBool
+    regimes: Regimes
+    conditions: Annotated[list[Condition], Field(min_length=1)]
+    score_threshold: Annotated[Number, Field(ge=0, le=100)] | None = None
+    exit: ExitRule
+
+    @model_validator(mode="after")
+    def _weights_sum_to_100(self) -> Pattern:
+        total = sum(c.weight for c in self.conditions)
+        if abs(total - 100) > 1e-9:
+            raise ValueError(f"conditions の weight の合計が 100 ではありません（{total}）")
+        keys = [c.key for c in self.conditions]
+        dup = sorted({k for k in keys if keys.count(k) > 1})
+        if dup:
+            raise ValueError(f"conditions の key が重複しています: {dup}")
+        return self
+
+
+# --- まとめて読む -----------------------------------------------------------
+
+
+class Config(_Model):
+    settings: Settings
+    symbols: list[Symbol]
+    events: list[Event]
+    patterns: list[Pattern]
+
+    def watched_symbols(self, market: Market) -> list[Symbol]:
+        return [s for s in self.symbols if s.market == market and s.watched]
+
+    def active_patterns(self) -> list[Pattern]:
+        return [p for p in self.patterns if p.active]
+
+    def score_threshold(self, pattern: Pattern) -> float:
+        if pattern.score_threshold is not None:
+            return pattern.score_threshold
+        return self.settings.scoring.default_score_threshold
+
+
+_PATTERN_FILE = re.compile(r"^v([1-9][0-9]*)\.yaml$")
+
+
+def _read_yaml(path: Path) -> Any:
+    try:
+        with path.open(encoding="utf-8") as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError as e:
+        raise ConfigError(f"{path}: ファイルがありません") from e
+    except yaml.YAMLError as e:
+        raise ConfigError(f"{path}: YAML として読めません: {e}") from e
+
+
+def _validate[T: BaseModel](model: type[T], data: Any, path: Path) -> T:
+    try:
+        return model.model_validate(data)
+    except ValidationError as e:
+        raise ConfigError(f"{path}: {e}") from e
+
+
+def _validate_list[T: BaseModel](model: type[T], data: Any, path: Path) -> list[T]:
+    if data is None:
+        data = []
+    if not isinstance(data, list):
+        raise ConfigError(f"{path}: トップレベルはリストで書いてください")
+    return [_validate(model, item, path) for item in data]
+
+
+def load_patterns(patterns_dir: Path) -> list[Pattern]:
+    patterns: list[Pattern] = []
+    for path in sorted(patterns_dir.glob("*/*.yaml")):
+        m = _PATTERN_FILE.match(path.name)
+        if not m:
+            raise ConfigError(f"{path}: ファイル名は v<番号>.yaml にしてください")
+        pattern = _validate(Pattern, _read_yaml(path), path)
+        if pattern.pattern_id != path.parent.name:
+            raise ConfigError(
+                f"{path}: pattern_id（{pattern.pattern_id}）がディレクトリ名と一致しません"
+            )
+        if pattern.version != int(m.group(1)):
+            raise ConfigError(f"{path}: version（{pattern.version}）がファイル名と一致しません")
+        patterns.append(pattern)
+
+    active: dict[str, list[int]] = defaultdict(list)
+    for p in patterns:
+        if p.active:
+            active[p.pattern_id].append(p.version)
+    for pattern_id, versions in active.items():
+        if len(versions) > 1:
+            raise ConfigError(
+                f"{patterns_dir / pattern_id}: active: true のバージョンが複数あります: {versions}"
+            )
+    return patterns
+
+
+def load_config(config_dir: Path) -> Config:
+    settings_path = config_dir / "settings.yaml"
+    settings = _validate(Settings, _read_yaml(settings_path), settings_path)
+    symbols_path = config_dir / "symbols.yaml"
+    symbols = _validate_list(Symbol, _read_yaml(symbols_path), symbols_path)
+    events_path = config_dir / "events.yaml"
+    events = _validate_list(Event, _read_yaml(events_path), events_path)
+    patterns = load_patterns(config_dir / "patterns")
+
+    seen: set[tuple[str, str]] = set()
+    for s in symbols:
+        key = (s.market, s.symbol)
+        if key in seen:
+            raise ConfigError(f"{symbols_path}: 銘柄が重複しています: {s.market} {s.symbol}")
+        seen.add(key)
+    for e in events:
+        if (e.market, e.symbol) not in seen:
+            raise ConfigError(
+                f"{events_path}: symbols.yaml に無い銘柄のイベントです: {e.market} {e.symbol}"
+            )
+
+    return Config(settings=settings, symbols=symbols, events=events, patterns=patterns)

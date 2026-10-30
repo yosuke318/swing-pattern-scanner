@@ -1,0 +1,19 @@
+# 基本設計書 3.3 の例をそのまま置いた暫定版。閾値と出口はバックテストで見直す。
+pattern_id: golden_cross_uptrend
+version: 1
+name: ゴールデンクロス＋上昇構造
+category: trend
+active: true
+regimes:
+  vol: [normal]
+  trend: [uptrend]
+conditions:
+  - {key: golden_cross_within_days, op: "<=", value: 5, weight: 25}
+  - {key: swing_low_higher_than_prior, op: "==", value: true, weight: 25}
+  - {key: adx14, op: ">=", value: 20, weight: 25}
+  - {key: close_minus_ma25_atr_ratio, op: between, value: [-1.0, 0.5], weight: 25}
+score_threshold: 75
+exit:
+  stop: {type: swing_low_or_atr, atr_mult: 1.5}
+  target: {atr_mult: 3.0}
+  max_holding_days: 10

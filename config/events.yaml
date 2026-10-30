@@ -1,0 +1,8 @@
+# 決算日などのイベント（手動登録）。判定日から max_holding_days 営業日以内にあれば除外する。
+# 例:
+# - symbol: "7203"
+#   market: JP
+#   date: 2026-11-05
+#   type: earnings
+#   note: 2Q決算
+[]

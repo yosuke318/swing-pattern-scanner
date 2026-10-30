@@ -1,0 +1,33 @@
+# 日次処理とバックテストで共通の設定。
+# 認証情報や通知先のアドレス・トークンは GitHub Actions Secrets に置き、ここには書かない。
+
+fetch:
+  # 取得する営業日数。最長の計算期間（ATR252パーセンタイル = 252 + 14日、200日MA）に余裕を持たせる
+  lookback_days: 300
+
+markets:
+  JP:
+    # 20日平均売買代金の下限（円）。これ未満は流動性フィルタで除外する
+    min_trading_value_20d: 100000000
+    # 市場環境フィルタと相対強度に使う指数ETF
+    index_symbol: "1306"
+  US:
+    # 20日平均売買代金の下限（ドル）
+    min_trading_value_20d: 10000000
+    index_symbol: SPY
+
+scoring:
+  # パターン定義に score_threshold が無いときの既定値
+  default_score_threshold: 75
+
+notification:
+  # 同一銘柄・同一パターンを再通知しない営業日数
+  cooldown_business_days: 5
+  email:
+    enabled: true
+  line:
+    enabled: false
+
+market_filter:
+  # 指数が downtrend のときの扱い。off: 何もしない / annotate: 通知に注記 / suppress: 通知を抑制
+  mode: annotate
