@@ -1,0 +1,96 @@
+name: Daily scan
+
+on:
+  schedule:
+    # cron は UTC。正時は混雑して遅れやすいので分をずらす。
+    # 日本株: 平日 19:17 JST。J-Quants の当日分の更新時刻を [1-0] で確かめて見直す（暫定）
+    - cron: "17 10 * * 1-5"
+    # 米国株: 火〜土 07:43 JST。米国市場の引け（夏時間 5:00 / 冬時間 6:00 JST）の後
+    - cron: "43 22 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      market:
+        description: 市場
+        type: choice
+        options: [JP, US]
+        required: true
+      date:
+        description: 対象日（YYYY-MM-DD）。空なら現地時刻で直近に引けた日
+        type: string
+        required: false
+      force:
+        description: 同じ対象日の通知を送り直す
+        type: boolean
+        default: false
+      dry_run:
+        description: 通知を送らず state も更新しない（ログに通知文を出す）
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# 日本株と米国株は同じ state/ を書くので、市場をまたいで直列にする（取り消さずに待たせる）
+concurrency:
+  group: state
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    # 定期実行はリポジトリ変数 DAILY_ENABLED が true のときだけ動かす（取得処理がそろうまで止めておく）。
+    # 手動実行はいつでも動く
+    if: github.event_name == 'workflow_dispatch' || vars.DAILY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MARKET: ${{ github.event_name == 'workflow_dispatch' && inputs.market || (github.event.schedule == '43 22 * * 1-5' && 'US' || 'JP') }}
+      TARGET_DATE: ${{ inputs.date }}
+      FORCE: ${{ inputs.force }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - run: uv sync --locked --no-dev
+
+      - name: Run daily scan
+        env:
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          JQUANTS_REFRESH_TOKEN: ${{ secrets.JQUANTS_REFRESH_TOKEN }}
+          JQUANTS_MAIL: ${{ secrets.JQUANTS_MAIL }}
+          JQUANTS_PASSWORD: ${{ secrets.JQUANTS_PASSWORD }}
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          MAIL_USER: ${{ secrets.MAIL_USER }}
+          MAIL_APP_PASSWORD: ${{ secrets.MAIL_APP_PASSWORD }}
+          MAIL_TO: ${{ secrets.MAIL_TO }}
+          LINE_CHANNEL_ACCESS_TOKEN: ${{ secrets.LINE_CHANNEL_ACCESS_TOKEN }}
+          LINE_TO: ${{ secrets.LINE_TO }}
+        run: |
+          args=(--market "$MARKET")
+          if [ -n "$TARGET_DATE" ]; then args+=(--date "$TARGET_DATE"); fi
+          if [ "$FORCE" = "true" ]; then args+=(--force); fi
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          uv run swing-scanner run "${args[@]}"
+
+      # 異常終了したときは state を書いていないので、成功したときだけコミットする
+      - name: Commit state
+        if: success() && env.DRY_RUN != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state/
+          if git diff --cached --quiet; then
+            echo "state に変更はありません"
+            exit 0
+          fi
+          git commit -m "chore: update state ($MARKET)"
+          # 実行中に main が進んでいたら取り込んでから push する
+          for i in 1 2 3; do
+            git pull --rebase --quiet && git push && exit 0
+            sleep $((i * 5))
+          done
+          exit 1

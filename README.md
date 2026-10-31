@@ -185,6 +185,33 @@ uv run swing-scanner run --market JP --data-dir data/ --calendar weekdays --dry-
 | `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API のチャネルアクセストークン |
 | `LINE_TO` | 送り先のユーザー ID |
 
+## GitHub Actions での運用
+
+`.github/workflows/daily.yml` が日次処理を動かし、`state/` に差分があればコミット・push する。
+
+| 市場 | 起動（日本時間） | cron（UTC） |
+| -- | -- | -- |
+| 日本株 | 平日 19:17（暫定。J-Quants の更新時刻を調べて見直す） | `17 10 * * 1-5` |
+| 米国株 | 火〜土 07:43（米国の引けは夏時間 5:00 / 冬時間 6:00） | `43 22 * * 1-5` |
+
+- 定期実行は、リポジトリ変数 `DAILY_ENABLED` を `true` にしたときだけ動く（Settings → Secrets and variables → Actions → Variables）。データ取得（[1-4] [1-5]）がそろうまでは止めておく。
+- 手動実行（Actions → Daily scan → Run workflow）で、市場・対象日・送り直し（force）・dry-run を指定できる。cron の抜けや遅延で届かなかった日はここから再実行する。
+- 両市場のジョブは `concurrency: state` で直列に動く（同じ `state/` を書くため）。異常終了したときは state を書いていないので、コミットもしない。
+- 失敗すると GitHub から失敗通知メールが届く（定期実行の失敗は、ワークフローを最後に変更したユーザーに届く）。
+- cron は混雑時に数十分遅れることがあり、まれに実行されない。「該当なし」の日もメールが届くので、届かなければ抜けに気づける。
+- 定期実行は既定ブランチ（main）のワークフローだけが動く。
+
+Secrets（Settings → Secrets and variables → Actions → Secrets）に登録するもの。使わないものは登録しなくてよい。
+
+| Secret | 内容 |
+| -- | -- |
+| `JQUANTS_API_KEY` | J-Quants v2 の API キー（v1 なら下の2つのどちらか） |
+| `JQUANTS_REFRESH_TOKEN` | J-Quants v1 のリフレッシュトークン（1週間で切れるので無人運用には向かない） |
+| `JQUANTS_MAIL` / `JQUANTS_PASSWORD` | J-Quants v1 のメールアドレスとパスワード |
+| `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` | Alpaca の API キー |
+| `MAIL_USER` / `MAIL_APP_PASSWORD` / `MAIL_TO` | Gmail の送信元・アプリ パスワード・送り先 |
+| `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_TO` | LINE Messaging API（`notification.line.enabled: true` のときだけ要る） |
+
 ## 状態ファイルの書き込み
 
 日本株と米国株のジョブはどちらも同じ `state/` を書く。ファイルを市場別に分けず、ワークフローの `concurrency` を共通のグループにして直列化する。
