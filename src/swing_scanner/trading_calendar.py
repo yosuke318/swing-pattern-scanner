@@ -182,3 +182,20 @@ def resolve_target(
         if session is not None and local_now < session.close:
             target -= dt.timedelta(days=1)
     return TargetDay(market, target, target in sessions)
+
+
+class WeekdayCalendar:
+    """土日だけを休場とするカレンダー。API の認証情報なしで動作確認するとき用（祝日を知らない）。"""
+
+    CLOSE: dict[Market, dt.time] = {"JP": dt.time(15, 30), "US": dt.time(16, 0)}
+
+    def __init__(self, market: Market) -> None:
+        self.market = market
+
+    def sessions(self, start: dt.date, end: dt.date) -> dict[dt.date, Session]:
+        tz, close = MARKET_TZ[self.market], self.CLOSE[self.market]
+        return {
+            d: Session(d, dt.datetime.combine(d, close, tz))
+            for d in _days(start, end)
+            if d.weekday() < 5
+        }

@@ -113,6 +113,24 @@ def append_run(state_dir: Path, record: RunRecord) -> None:
     _append_csv(state_dir / "runs.csv", RUN_COLUMNS, [asdict(record)])
 
 
+def load_runs(state_dir: Path) -> list[dict[str, str]]:
+    path = state_dir / "runs.csv"
+    if not path.exists():
+        return []
+    with path.open(encoding="utf-8", newline="") as f:
+        return list(csv.DictReader(f))
+
+
+def already_reported(state_dir: Path, market: str, target_date: dt.date) -> bool:
+    """その市場・対象日の通知をすでに送ったか（runs.csv に success / partial の行がある）。"""
+    return any(
+        r["market"] == market
+        and r["target_date"] == target_date.isoformat()
+        and r["status"] in ("success", "partial")
+        for r in load_runs(state_dir)
+    )
+
+
 def notified_key(symbol: str, pattern_id: str) -> str:
     return f"{symbol}|{pattern_id}"
 
@@ -127,5 +145,6 @@ def load_notified(state_dir: Path) -> dict[str, dt.date]:
 
 def save_notified(state_dir: Path, notified: dict[str, dt.date]) -> None:
     path = state_dir / "notified.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
     data = {k: v.isoformat() for k, v in sorted(notified.items())}
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

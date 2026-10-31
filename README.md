@@ -46,14 +46,22 @@ uv run swing-scanner validate-config
 ## 日次実行
 
 ```bash
-uv run swing-scanner run --market JP              # 対象日は現地時刻で直近に引けた日
-uv run swing-scanner run --market US --date 2026-11-02   # 対象日を指定（手動実行）
+uv run swing-scanner run --market JP                        # 対象日は現地時刻で直近に引けた日
+uv run swing-scanner run --market US --date 2026-11-02      # 対象日を指定（手動実行）
+uv run swing-scanner run --market JP --dry-run              # 通知を送らず state も書かない。通知文を表示する
+uv run swing-scanner run --market JP --force                # 同じ対象日の通知を送り直す
+uv run swing-scanner run --market JP --data-dir data/ --calendar weekdays --dry-run   # API なしで動作確認
 ```
 
-- 実行の先頭で取引カレンダー（日本株は J-Quants、米国株は Alpaca）を引き、対象日が休場日なら `runs.csv` に `skipped_holiday` を記録して正常終了する。休場日リストは自前で持たない。
-- 米国株は日本時間の翌朝に動くので、対象日は NY 時間の日付になる。日本の祝日でも米国株は通常どおり判定する。
-- カレンダーを取得・解釈できなければ異常終了する。
-- 認証情報は環境変数から読む。J-Quants は `JQUANTS_API_KEY`（v2）、または `JQUANTS_REFRESH_TOKEN` か `JQUANTS_MAIL` + `JQUANTS_PASSWORD`（v1）。Alpaca は `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`。
+基本設計書 5.2 の手順を `src/swing_scanner/daily.py` の `run_daily` が順に実行し、手順ごとの件数と所要時間を標準エラーに出す。
+
+- 実行の先頭で取引カレンダー（日本株は J-Quants、米国株は Alpaca）を引き、対象日が休場日なら `runs.csv` に `skipped_holiday` を記録して正常終了する。休場日リストは自前で持たない。米国株は日本時間の翌朝に動くので、対象日は NY 時間の日付になる。
+- 銘柄単位の失敗（取得失敗、対象日のデータが無い、欠損・異常値）はその銘柄だけ外して続け、通知に警告として載せる（`runs.csv` は partial）。全銘柄の取得失敗、カレンダーの取得失敗、送信失敗は異常終了する。
+- 送ってから記録する。送信に失敗したら判定ログ・`notified.json`・`runs.csv` のどれも更新しない（再実行で送り直せる）。
+- 同じ対象日を再実行しても、判定ログは置き換えになり二重にならない。送信済みのシグナルはクールダウンで弾き、その日の通知を送り済みで新しいシグナルも無ければ通知は送らない。`--force` を付けると同じ日の分を送り直す。
+- 終了コードは正常（休場日を含む）が 0、異常が 1。
+- `--data-dir` を付けると日足を `<DIR>/<銘柄コード>.csv`（列: date / open / high / low / close / volume、任意で trading_value）から読む。ベンチマーク（1306 / SPY）の CSV も要る。API からの取得（[1-4] [1-5]）はまだ無いので、今は `--data-dir` が必須。`--calendar weekdays` は土日だけを休場とし、API の認証情報なしで試せる。
+- 認証情報は環境変数から読む。J-Quants は `JQUANTS_API_KEY`（v2）、または `JQUANTS_REFRESH_TOKEN` か `JQUANTS_MAIL` + `JQUANTS_PASSWORD`（v1）。Alpaca は `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`。通知の認証情報は下の「通知」を参照。
 
 ## 指標計算の決まり
 
