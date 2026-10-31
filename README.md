@@ -87,6 +87,56 @@ uv run swing-scanner run --market US --date 2026-11-02   # 対象日を指定（
 - 寄り付きの窓開けでエントリーを見送るしきい値（g×ATR）は `exit.skip_gap_atr_mult` に書く。省略時は見送らない。
 - 認証情報と通知先のアドレス・トークンは GitHub Actions Secrets に置き、リポジトリには書かない。
 
+## パターン定義と判定
+
+パターン定義は `config/patterns/<pattern_id>/v<n>.yaml` に置く（書式は基本設計書 3.3、上の「設定ファイルの決まり」も参照）。
+
+- 本番に適用するバージョンは `active: true` の1つだけ。切り替えは active を書き換えるコミットで行い、戻すときは revert する。
+- 一度使ったバージョンのファイルは書き換えない。閾値を変えるときは新しいバージョンのファイルを作る（過去の判定ログがどの閾値で出たか分からなくなるため）。
+- バックテストでは `Config.pattern(pattern_id, version)` で過去のバージョンを指定して読み込む。
+- `key` は下の一覧にあるものだけ使える。一覧に無い key、真偽値の key に数値を書く（またはその逆）と読み込み時にエラーになる。key は一度使ったら消さず、意味も変えない。
+
+### パターン条件で使える key
+
+`src/swing_scanner/rules/keys.py` で定義している。一覧を変えたらこの表も直す（テストで突き合わせる）。
+
+| key | 型 | 内容 |
+| -- | -- | -- |
+| `close` | 数値 | 終値 |
+| `ma5` | 数値 | 5日単純移動平均 |
+| `ma25` | 数値 | 25日単純移動平均 |
+| `ma75` | 数値 | 75日単純移動平均 |
+| `ma200` | 数値 | 200日単純移動平均 |
+| `close_minus_ma5_atr_ratio` | 数値 | (終値 − MA5) ÷ ATR14 |
+| `close_minus_ma25_atr_ratio` | 数値 | (終値 − MA25) ÷ ATR14 |
+| `close_minus_ma75_atr_ratio` | 数値 | (終値 − MA75) ÷ ATR14 |
+| `close_minus_ma200_atr_ratio` | 数値 | (終値 − MA200) ÷ ATR14 |
+| `golden_cross_within_days` | 数値 | 直近のゴールデンクロスからの営業日数（当日 0、未発生は inf）。`<=` で「X日以内」 |
+| `golden_cross_flag` | 真偽値 | 当日ゴールデンクロスが発生した |
+| `adx14` | 数値 | ADX14（トレンドの強さ） |
+| `plus_di` | 数値 | +DI |
+| `minus_di` | 数値 | -DI |
+| `plus_di_above_minus_di` | 真偽値 | +DI > -DI（上向きのトレンド） |
+| `swing_low_higher_than_prior` | 真偽値 | 直近の確定スイング安値 > その前の安値 |
+| `swing_high_higher_than_prior` | 真偽値 | 直近の確定スイング高値 > その前の高値 |
+| `hh_hl_uptrend` | 真偽値 | hh_hl_structure が uptrend |
+| `atr14` | 数値 | ATR14（Wilder） |
+| `atr14_pct` | 数値 | ATR14 ÷ 終値（比率） |
+| `atr252_percentile` | 数値 | atr14_pct の直近252日での順位（0〜100） |
+| `volume_ratio_20d` | 数値 | 当日出来高 ÷ 前日までの20日平均出来高 |
+| `relative_strength_20d` | 数値 | 20日リターンの指数ETFとの差（比率） |
+| `trading_value_20d` | 数値 | 20日平均売買代金 |
+
+### 判定（ルールエンジン）
+
+`src/swing_scanner/rules/engine.py` の `evaluate(pattern, row)`。日次処理とバックテストで同じ関数を使う。
+
+- 条件ごとに passed / failed / unevaluable（評価不能）を返す。指標が欠けている条件は評価不能で、スコアに入らず、全条件合致（matched）にもならない。
+- `between` は両端を含む（下限 ≤ 値 ≤ 上限）。
+- スコアは passed の条件の weight の合計（100点満点）。matched は全条件 passed で、かつレジームが対象のとき。
+- パターンの `regimes` に当日の `vol_regime` / `trend_regime` が無ければ対象外（matched にせず、理由を残す）。レジームが評価不能のときも対象外。
+- 出口（基本設計書 4.6）は当日終値を基準にした目安。損切りは「直近スイング安値」と「終値 − k×ATR」の浅い方（スイング安値が無い・終値以上なら ATR 側）、利確は「終値 + m×ATR」。バックテストは `exit_plan` にエントリー価格を渡して計算し直す。
+
 ## 状態ファイルの書き込み
 
 日本株と米国株のジョブはどちらも同じ `state/` を書く。ファイルを市場別に分けず、ワークフローの `concurrency` を共通のグループにして直列化する。

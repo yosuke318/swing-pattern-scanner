@@ -86,7 +86,10 @@ PATTERN = "patterns/golden_cross_uptrend/v1.yaml"
         (lambda d: d["conditions"][0].update(value=[1, 2]), "リスト"),
         (lambda d: d["conditions"][1].update(op=">="), "真偽値"),
         (lambda d: d["conditions"][0].update(op="=~"), "op"),
-        (lambda d: d["conditions"][1].update(key="adx14"), "重複"),
+        (lambda d: d["conditions"][3].update(key="adx14"), "重複"),
+        (lambda d: d["conditions"][0].update(key="no_such_key"), "未知の key"),
+        (lambda d: d["conditions"][1].update(value=1), "真偽値の key"),
+        (lambda d: d["conditions"][2].update(op="==", value=True), "数値の key"),
         (lambda d: d["regimes"].update(vol=["extreme"]), "vol"),
         (lambda d: d["exit"].pop("max_holding_days"), "max_holding_days"),
         (lambda d: d["exit"]["stop"].update(atr_mult=0), "atr_mult"),
@@ -146,3 +149,18 @@ def test_repo_symbols_cover_both_markets():
     assert config.watched_symbols("US")
     assert config.settings.markets["JP"].benchmark_symbol == "1306"
     assert config.settings.markets["US"].benchmark_symbol == "SPY"
+
+
+def test_pattern_can_be_loaded_by_version(config_dir: Path):
+    src = config_dir / PATTERN
+    v2 = src.with_name("v2.yaml")
+    shutil.copy(src, v2)
+    _edit(src, lambda d: d.update(active=False))
+    _edit(v2, lambda d: d.update(version=2, score_threshold=50))
+    config = load_config(config_dir)
+    assert config.pattern("golden_cross_uptrend").version == 2
+    assert config.pattern("golden_cross_uptrend", 1).score_threshold == 75
+    with pytest.raises(ConfigError, match="v3"):
+        config.pattern("golden_cross_uptrend", 3)
+    with pytest.raises(ConfigError, match="active"):
+        config.pattern("no_such_pattern")

@@ -24,6 +24,8 @@ from pydantic import (
     model_validator,
 )
 
+from swing_scanner.rules.keys import KEYS
+
 Market = Literal["JP", "US"]
 VolRegime = Literal["low", "normal", "high"]
 TrendRegime = Literal["uptrend", "range", "downtrend"]
@@ -164,6 +166,15 @@ class Condition(_Model):
 
     @model_validator(mode="after")
     def _value_matches_op(self) -> Condition:
+        spec = KEYS.get(self.key)
+        if spec is None:
+            raise ValueError(f"未知の key です: {self.key!r}（使える key は README の一覧を参照）")
+        if spec.type == "bool" and not isinstance(self.value, bool):
+            raise ValueError(
+                f"{self.key} は真偽値の key です。value は true / false で書いてください"
+            )
+        if spec.type == "number" and isinstance(self.value, bool):
+            raise ValueError(f"{self.key} は数値の key です。value に真偽値は使えません")
         if self.op == "between":
             if not isinstance(self.value, list) or len(self.value) != 2:
                 raise ValueError(f"{self.key}: between の value は [下限, 上限] で書いてください")
@@ -237,6 +248,19 @@ class Config(_Model):
 
     def active_patterns(self) -> list[Pattern]:
         return [p for p in self.patterns if p.active]
+
+    def pattern(self, pattern_id: str, version: int | None = None) -> Pattern:
+        """pattern_id のパターンを返す。version を省略すると active なバージョン。
+
+        バックテストで過去のバージョンを指定して読み込むときに使う。
+        """
+        for p in self.patterns:
+            if p.pattern_id == pattern_id and (
+                p.version == version or (version is None and p.active)
+            ):
+                return p
+        which = f"v{version}" if version is not None else "active なバージョン"
+        raise ConfigError(f"パターン {pattern_id} の {which} がありません")
 
     def score_threshold(self, pattern: Pattern) -> float:
         if pattern.score_threshold is not None:
