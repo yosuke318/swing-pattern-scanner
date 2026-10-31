@@ -57,18 +57,22 @@ uv run swing-scanner run --market US --date 2026-11-02   # 対象日を指定（
 
 ## 指標計算の決まり
 
-`src/swing_scanner/features/` にある。日次処理とバックテストで同じ関数を使う。計算方式を変えるとバックテスト結果が再現できなくなるので、変えるときはここも直す。
+`src/swing_scanner/features/` にある。入口は `compute_features(ohlcv, benchmark, settings.features)` で、日次処理（約300営業日を入れて最終行を使う）とバックテスト（最大5年を入れて全行を使う）が同じ関数を使う。出力の列は基本設計書 3.6 の列のあとに、判定やログで使う補助の列（`dead_cross_flag`、`prior_swing_high_price`、`swing_low_higher_than_prior`、`close_minus_ma<n>_atr_ratio`）が並ぶ。
+
+パラメータ（ゴールデンクロスの組、スイングの N、HH/HL で比べる個数、`trend_regime` の方式、ヒステリシス）は `settings.yaml` の `features` に書く。計算方式を変えるとバックテスト結果が再現できなくなるので、変えるときはここも直す。
 
 - 移動平均は単純移動平均（ma5 / ma25 / ma75 / ma200）。
-- ゴールデンクロスは「前日 MA短期 ≤ MA長期、当日 MA短期 > MA長期」。既定の組は 25 / 75。`days_since_golden_cross` は直近の GD からの営業日数（当日 0）で、まだ GD が無ければ `inf`。
+- ゴールデンクロスは「前日 MA短期 ≤ MA長期、当日 MA短期 > MA長期」。組は `features.golden_cross_pair`（25 / 75）。`days_since_golden_cross` は直近の GD からの営業日数（当日 0）で、まだ GD が無ければ `inf`。
 - ATR14 は Wilder の平滑化（最初の14日の単純平均を初期値にする。TradingView の `ta.atr(14)` と同じ）。True Range は前日終値との窓を含む。
 - ADX14 / +DI / -DI は TradingView の `ta.dmi(14, 14)` と同じ定義（Wilder の平滑化）。値動きが全く無い期間は 0。
 - `atr14_pct` は ATR14 ÷ 終値の比率（0.023 = 2.3%）。`atr252_percentile` は当日を含む直近252営業日の `atr14_pct` の中での順位（0〜100）。
-- スイング高値は「高値が前 N 日より高く、後 N 日以上」の日（安値も同様）。N は固定で既定 3（`features/swing.py` の `SWING_WINDOW`、引数で変えてバックテストで比較する）。i 日目のスイングは i+N 日目に確定したものとして扱い、各行はその日までに確定したスイングだけを使う。
+- スイング高値は「高値が前 N 日より高く、後 N 日以上」の日（安値も同様）。N は固定値で `features.swing_window`（3）。バックテストで比べて決める。i 日目のスイングは i+N 日目に確定したものとして扱い、各行はその日までに確定したスイングだけを使う。
 - `hh_hl_structure` は直近2つのスイング高値・安値がともに切り上がれば uptrend、ともに切り下がれば downtrend、それ以外は unclear。
 - `vol_regime` は `atr252_percentile` が 20 以下で low、80 以上で high、それ以外は normal。
-- `trend_regime` は ADX（ADX14 ≥ 20 と ±DI の向き）・HH/HL 構造・MA の並び（終値・MA25・MA75）の3つのうち、2つ以上が同じ向きで逆向きが無ければその向き、それ以外は range（`features/regime.py` の `TREND_METHOD = "vote"`）。単独の方式（adx / structure / ma）にも切り替えられ、実データの該当日数を比べて決め直す。区分が連続 k 日続くまで切り替えないヒステリシスは既定で無し。
+- `trend_regime` は ADX（ADX14 ≥ 20 と ±DI の向き）・HH/HL 構造・MA の並び（終値・MA25・MA75）の3つのうち、2つ以上が同じ向きで逆向きが無ければその向き、それ以外は range（`features.trend_method: vote`）。単独の方式（adx / structure / ma）にも切り替えられ、実データの該当日数を比べて決め直す。区分が連続 k 日続くまで切り替えないヒステリシス（`features.hysteresis_days`）は既定で無し（1）。
 - `trading_value_20d` は 20 日平均売買代金。API の売買代金（`trading_value` 列）を使い、無ければ終値 × 出来高。
+- `volume_ratio_20d` は当日出来高 ÷ 前日までの20日平均出来高（当日を分母に入れない）。
+- `relative_strength_20d` は銘柄と指数ETFの20日リターンの差。指数を取得できなかった日や、指数に無い日付は NaN（評価不能）。
 - 計算期間が足りない値は NaN（評価不能）。上場から252営業日未満の銘柄は `atr252_percentile` が NaN になる。
 
 ## 設定ファイルの決まり

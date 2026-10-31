@@ -27,6 +27,7 @@ from pydantic import (
 Market = Literal["JP", "US"]
 VolRegime = Literal["low", "normal", "high"]
 TrendRegime = Literal["uptrend", "range", "downtrend"]
+TrendMethod = Literal["adx", "structure", "ma", "vote"]
 
 PositiveInt = Annotated[StrictInt, Field(gt=0)]
 PositiveFloat = Annotated[StrictFloat | StrictInt, Field(gt=0)]
@@ -85,8 +86,30 @@ class MarketFilterSettings(_Model):
     mode: Literal["off", "annotate", "suppress"]
 
 
+class FeatureSettings(_Model):
+    """指標計算のパラメータ（features/）。日次処理とバックテストで同じ値を使う。"""
+
+    # ゴールデンクロスを判定する MA の組 [短期, 長期]
+    golden_cross_pair: tuple[PositiveInt, PositiveInt]
+    # スイング検出の前後の日数 N
+    swing_window: PositiveInt
+    # HH/HL 判定で比べるスイングの個数
+    structure_pairs: Annotated[StrictInt, Field(ge=2)]
+    trend_method: TrendMethod
+    # 区分が連続でこの日数続くまで切り替えない。1 なら遅らせない
+    hysteresis_days: PositiveInt
+
+    @model_validator(mode="after")
+    def _short_before_long(self) -> FeatureSettings:
+        short, long = self.golden_cross_pair
+        if short >= long:
+            raise ValueError(f"golden_cross_pair は [短期, 長期] で書いてください: {[short, long]}")
+        return self
+
+
 class Settings(_Model):
     fetch: FetchSettings
+    features: FeatureSettings
     markets: dict[Market, MarketSettings]
     scoring: ScoringSettings
     notification: NotificationSettings

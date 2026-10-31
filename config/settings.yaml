@@ -5,6 +5,18 @@ fetch:
   # 取得する営業日数。最長の計算期間（ATR252パーセンタイル = 252 + 14日、200日MA）に余裕を持たせる
   lookback_days: 300
 
+# 指標計算のパラメータ。バックテストで比べて決め、日次処理も同じ値を使う
+features:
+  golden_cross_pair: [25, 75]
+  # スイング高値・安値の検出で見る前後の日数 N。i 日目のスイングは i+N 日目に確定する
+  swing_window: 3
+  # HH/HL 判定で比べる直近のスイングの個数
+  structure_pairs: 2
+  # trend_regime の決め方。adx / structure / ma / vote（3つのうち2つ以上が同じ向き）
+  trend_method: vote
+  # レジームが連続でこの日数続くまで切り替えない。1 なら毎日そのまま切り替える
+  hysteresis_days: 1
+
 markets:
   JP:
     # 20日平均売買代金の下限（円）。これ未満は流動性フィルタで除外する

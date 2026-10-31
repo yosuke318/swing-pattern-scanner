@@ -6,3 +6,7 @@
 計算期間が足りない行は NaN にする。判定側（[3-2]）は NaN を「条件不成立」ではなく
 「評価不能」として扱う。各行の値は、その日までのデータだけで決まる（先読みしない）。
 """
+
+from swing_scanner.features.pipeline import EXTRA_COLUMNS, FEATURE_COLUMNS, compute_features
+
+__all__ = ["EXTRA_COLUMNS", "FEATURE_COLUMNS", "compute_features"]

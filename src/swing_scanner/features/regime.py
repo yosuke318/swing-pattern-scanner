@@ -20,12 +20,10 @@ trading_value_20d: 20日平均売買代金。trading_value 列（API が返す�
 無ければ 終値 × 出来高 で代用する。
 """
 
-from typing import Literal
-
 import numpy as np
 import pandas as pd
 
-TrendMethod = Literal["adx", "structure", "ma", "vote"]
+from swing_scanner.config import TrendMethod
 
 VOL_LOW_PERCENTILE = 20
 VOL_HIGH_PERCENTILE = 80
