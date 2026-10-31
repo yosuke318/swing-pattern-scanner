@@ -14,7 +14,7 @@ from swing_scanner.cli import main
 from swing_scanner.config import load_config
 from swing_scanner.daily import DailyError, run_daily
 from swing_scanner.notify.send import NotifyError
-from swing_scanner.sources.base import SourceUnavailable, UnavailableSource
+from swing_scanner.sources.base import SourceUnavailable
 from swing_scanner.sources.http import ApiError
 from swing_scanner.state import load_notified, notified_key
 from swing_scanner.trading_calendar import WeekdayCalendar
@@ -231,10 +231,16 @@ def test_all_symbols_failing_stops(tmp_path: Path) -> None:
     assert read_csv(tmp_path / "runs.csv") == []
 
 
+class UnavailableSource:
+    def fetch(self, symbol, start, end):
+        raise SourceUnavailable("J-Quants の認証ができません")
+
+
 def test_unavailable_source_stops_the_run(tmp_path: Path) -> None:
     config = load_config(ROOT / "config")
     with pytest.raises(SourceUnavailable):
-        run(config, tmp_path, UnavailableSource("JP"))
+        run(config, tmp_path, UnavailableSource())
+    assert read_csv(tmp_path / "runs.csv") == []
 
 
 def test_feature_errors_are_not_swallowed(tmp_path: Path, monkeypatch) -> None:
@@ -322,8 +328,10 @@ def test_cli_dry_run_with_csv(tmp_path: Path, capsys) -> None:
     assert not state.exists()
 
 
-def test_cli_exit_codes(tmp_path: Path, capsys) -> None:
+def test_cli_exit_codes(tmp_path: Path, capsys, monkeypatch) -> None:
+    for name in ("JQUANTS_API_KEY", "JQUANTS_REFRESH_TOKEN", "JQUANTS_MAIL", "JQUANTS_PASSWORD"):
+        monkeypatch.delenv(name, raising=False)
     base = ["run", "--market", "JP", "--calendar", "weekdays", "--state-dir", str(tmp_path)]
-    assert main([*base, "--date", "2026-10-31"]) == 0  # 休場日
-    assert main([*base, "--date", "2026-10-30"]) == 1  # 取得元が無い
-    assert "まだ実装されていません" in capsys.readouterr().err
+    assert main([*base, "--date", "2026-10-31"]) == 0  # 休場日は API を使わない
+    assert main([*base, "--date", "2026-10-30"]) == 1  # 認証情報が無い
+    assert "J-Quants の認証ができません" in capsys.readouterr().err

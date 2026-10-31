@@ -47,6 +47,8 @@ jobs:
       TARGET_DATE: ${{ inputs.date }}
       FORCE: ${{ inputs.force }}
       DRY_RUN: ${{ inputs.dry_run }}
+      # Alpaca のフィード（既定 sip）。無料キーで SIP が通らなければリポジトリ変数で iex にする
+      APCA_DATA_FEED: ${{ vars.APCA_DATA_FEED }}
     steps:
       - uses: actions/checkout@v4
 
