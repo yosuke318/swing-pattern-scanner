@@ -1,0 +1,22 @@
+# 低ボラ（スクイーズ）からの高値ブレイク（基本設計書 4.5: 低ボラ × 上昇トレンド）。
+# 閾値・出口は暫定値。バックテスト（[4-3] [4-4]）で決める。
+pattern_id: squeeze_breakout
+version: 1
+name: スクイーズからのブレイク
+category: squeeze
+active: true
+regimes:
+  vol: [low]
+  trend: [uptrend]
+conditions:
+  - {key: close_above_swing_high, op: "==", value: true, weight: 25, required: true}
+  - {key: volume_ratio_20d, op: ">=", value: 1.5, weight: 25}
+  # MA25 から離れすぎていない（ブレイク初動）
+  - {key: close_minus_ma25_atr_ratio, op: between, value: [0, 2.0], weight: 25}
+  - {key: relative_strength_20d, op: ">=", value: 0, weight: 25, required: true}
+score_threshold: 75
+exit:
+  stop: {type: atr, atr_mult: 1.5}
+  target: {atr_mult: 3.0}
+  max_holding_days: 15
+  skip_gap_atr_mult: 1.0

@@ -1,0 +1,21 @@
+# 上昇トレンド中の移動平均（MA25）への浅い押し目（基本設計書 4.5: 低ボラ・通常ボラ × 上昇トレンド）。
+# 閾値・出口は暫定値。バックテスト（[4-3] [4-4]）で決める。
+pattern_id: ma_pullback
+version: 1
+name: 移動平均への押し目
+category: pullback
+active: true
+regimes:
+  vol: [low, normal]
+  trend: [uptrend]
+conditions:
+  # 終値が MA25 の ±0.5 ATR 以内（浅い押し目。深く割り込んだものは取らない）
+  - {key: close_minus_ma25_atr_ratio, op: between, value: [-0.5, 0.5], weight: 25}
+  - {key: hh_hl_uptrend, op: "==", value: true, weight: 25}
+  - {key: plus_di_above_minus_di, op: "==", value: true, weight: 25}
+  - {key: relative_strength_20d, op: ">=", value: 0, weight: 25, required: true}
+score_threshold: 75
+exit:
+  stop: {type: swing_low_or_atr, atr_mult: 1.5}
+  target: {atr_mult: 2.5}
+  max_holding_days: 10

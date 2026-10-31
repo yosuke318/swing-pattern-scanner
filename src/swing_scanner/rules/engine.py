@@ -11,6 +11,8 @@
 - パターンの regimes に当日の vol_regime / trend_regime が入っていなければ対象外（skip_reason に
   理由を入れ、matched にしない）。レジームが評価不能のときも対象外。条件の評価結果は判定ログの
   ために残す
+- required: true の条件が passed でなければ（不成立・評価不能）、スコアにかかわらず対象外にする
+  （skip_reason に「必須条件未達」として入れる）
 - 出口は exit_plan で算出する。日次では当日終値を基準にした目安で、バックテストは実際の
   エントリー価格を渡して計算し直す
 """
@@ -34,6 +36,7 @@ class ConditionResult:
     actual: float | bool | None
     status: Status
     weight: float
+    required: bool = False
 
     def to_log(self) -> dict[str, Any]:
         """判定ログ（state/results/ の breakdown）に入れる形。passed は評価不能なら null。"""
@@ -47,6 +50,7 @@ class ConditionResult:
             "actual": actual,
             "passed": None if self.status == "unevaluable" else self.status == "passed",
             "weight": self.weight,
+            "required": self.required,
         }
 
 
@@ -69,7 +73,7 @@ class Evaluation:
     conditions: tuple[ConditionResult, ...]
     score: float
     matched: bool
-    # レジームが対象外・評価不能なときの理由。対象なら空文字
+    # 通知の対象外にした理由（レジームが対象外・評価不能、必須条件の未達）。対象なら空文字
     skip_reason: str
     # 終値か ATR14 が欠けていれば None
     exit: ExitPlan | None
@@ -110,6 +114,7 @@ def evaluate_condition(condition: Condition, row: Mapping[str, Any]) -> Conditio
         actual=actual,
         status=status,
         weight=float(condition.weight),
+        required=condition.required,
     )
 
 
@@ -156,6 +161,9 @@ def evaluate(pattern: Pattern, row: Mapping[str, Any]) -> Evaluation:
     """1日分の指標（compute_features の1行。辞書でもよい）をパターンと照合する。"""
     results = tuple(evaluate_condition(c, row) for c in pattern.conditions)
     skip_reason = regime_skip_reason(pattern, row)
+    missing = [r.key for r in results if r.required and r.status != "passed"]
+    if not skip_reason and missing:
+        skip_reason = f"必須条件未達: {', '.join(missing)}"
     return Evaluation(
         pattern_id=pattern.pattern_id,
         version=pattern.version,

@@ -57,10 +57,14 @@ def build_result_row(
 ) -> ResultRow:
     """判定ログ（state/results/）の1行を作る（手順8）。
 
-    excluded_reason には、通知しなかった理由をまとめて入れる: レジーム対象外と除外フィルタ。
+    excluded_reason には、通知しなかった理由をまとめて入れる: レジーム対象外・必須条件未達と
+    除外フィルタ。
     複数あれば "; " でつなぐ。commit_sha とパターンのバージョンから当時の判定を再現できる。
     """
-    reasons = [f"レジーム対象外: {evaluation.skip_reason}"] if evaluation.skip_reason else []
+    skip = evaluation.skip_reason
+    reasons = []
+    if skip:
+        reasons.append(skip if skip.startswith("必須条件未達") else f"レジーム対象外: {skip}")
     reasons += outcome.excluded
     plan = evaluation.exit
     return ResultRow(

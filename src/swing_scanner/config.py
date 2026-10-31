@@ -187,6 +187,8 @@ class Condition(_Model):
     op: Op
     value: StrictBool | Number | list[Number]
     weight: Annotated[Number, Field(gt=0)]
+    # true なら、スコアにかかわらずこの条件が成立しないと通知しない（相対強度が弱ければ見送り等）
+    required: StrictBool = False
 
     @model_validator(mode="after")
     def _value_matches_op(self) -> Condition:

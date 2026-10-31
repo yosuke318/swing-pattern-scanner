@@ -120,7 +120,7 @@ def test_earnings_ignores_other_symbols_markets_and_types() -> None:
 
 def test_earnings_window_follows_max_holding_days(config_dir: Path) -> None:
     config = make_config(config_dir, [earnings("7203", D(2026, 11, 12))])
-    pattern = config.pattern("golden_cross_uptrend")
+    pattern = config.pattern("golden_cross_uptrend", 1)
     short = pattern.model_copy(
         update={"exit": pattern.exit.model_copy(update={"max_holding_days": 3})}
     )
@@ -131,7 +131,7 @@ def test_earnings_window_follows_max_holding_days(config_dir: Path) -> None:
 def test_earnings_window_uses_trading_calendar(config_dir: Path) -> None:
     # 祝日が多い週は、カレンダーで数えると窓が先まで延びる
     config = make_config(config_dir, [earnings("7203", D(2026, 11, 17))])
-    pattern = config.pattern("golden_cross_uptrend")
+    pattern = config.pattern("golden_cross_uptrend", 1)
     weekdays = pd.bdate_range("2026-11-02", "2026-11-30").date
     sessions = [d for d in weekdays if d != D(2026, 11, 3)]
     assert not apply_filters(
@@ -166,7 +166,7 @@ def test_all_filters_combined(config_dir: Path) -> None:
     config = make_config(
         config_dir, [earnings("7203", D(2026, 11, 5))], market_filter={"mode": "suppress"}
     )
-    pattern = config.pattern("golden_cross_uptrend")
+    pattern = config.pattern("golden_cross_uptrend", 1)
     outcome = apply_filters(
         config, "JP", "7203", TODAY, pattern, good_row(trading_value_20d=1e7), "downtrend"
     )
@@ -180,7 +180,7 @@ def test_each_filter_can_be_turned_off(config_dir: Path) -> None:
         filters={"liquidity": False, "earnings": False},
         market_filter={"mode": "off"},
     )
-    pattern = config.pattern("golden_cross_uptrend")
+    pattern = config.pattern("golden_cross_uptrend", 1)
     outcome = apply_filters(
         config, "JP", "7203", TODAY, pattern, good_row(trading_value_20d=1e7), "downtrend"
     )
@@ -189,7 +189,7 @@ def test_each_filter_can_be_turned_off(config_dir: Path) -> None:
 
 def test_liquidity_minimum_is_per_market(config_dir: Path) -> None:
     config = make_config(config_dir, [])
-    pattern = config.pattern("golden_cross_uptrend")
+    pattern = config.pattern("golden_cross_uptrend", 1)
     row = good_row(trading_value_20d=5e7)  # 日本株の下限 1億円未満、米国株の下限 1,000万ドル以上
     assert apply_filters(config, "JP", "7203", TODAY, pattern, row, "uptrend").is_excluded
     assert not apply_filters(config, "US", "NVDA", TODAY, pattern, row, "uptrend").is_excluded
@@ -225,7 +225,7 @@ def test_no_registration_warning_when_earnings_filter_off(config_dir: Path) -> N
 
 def test_result_rows_record_everything(config_dir: Path, tmp_path: Path) -> None:
     config = make_config(config_dir, [earnings("6758", D(2026, 11, 5))])
-    pattern = config.pattern("golden_cross_uptrend")
+    pattern = config.pattern("golden_cross_uptrend", 1)
     at = dt.datetime(2026, 11, 2, 9, 0, tzinfo=dt.UTC)
     cases = {
         "7203": good_row(),  # 通知
@@ -270,7 +270,7 @@ def test_result_rows_record_everything(config_dir: Path, tmp_path: Path) -> None
 
 def test_result_row_without_exit(config_dir: Path) -> None:
     config = make_config(config_dir, [])
-    pattern = config.pattern("golden_cross_uptrend")
+    pattern = config.pattern("golden_cross_uptrend", 1)
     ev = evaluate(pattern, good_row(atr14=math.nan))
     row = build_result_row(
         TODAY,

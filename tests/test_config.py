@@ -104,16 +104,17 @@ def test_invalid_pattern_is_rejected(config_dir: Path, mutate, message):
 
 
 def test_only_one_active_version_per_pattern(config_dir: Path):
-    v1 = config_dir / PATTERN
-    v2 = v1.with_name("v2.yaml")
-    shutil.copy(v1, v2)
-    _edit(v2, lambda d: d.update(version=2))
+    v2 = config_dir / "patterns/golden_cross_uptrend/v2.yaml"
+    v3 = v2.with_name("v3.yaml")
+    shutil.copy(v2, v3)
+    _edit(v3, lambda d: d.update(version=3))
     with pytest.raises(ConfigError, match="複数"):
         load_config(config_dir)
 
-    _edit(v1, lambda d: d.update(active=False))
+    _edit(v2, lambda d: d.update(active=False))
     config = load_config(config_dir)
-    assert [p.version for p in config.active_patterns()] == [2]
+    active = [p.version for p in config.active_patterns() if p.pattern_id == "golden_cross_uptrend"]
+    assert active == [3]
 
 
 def test_pattern_file_name_must_be_versioned(config_dir: Path):
@@ -152,13 +153,9 @@ def test_repo_symbols_cover_both_markets():
 
 
 def test_pattern_can_be_loaded_by_version(config_dir: Path):
-    src = config_dir / PATTERN
-    v2 = src.with_name("v2.yaml")
-    shutil.copy(src, v2)
-    _edit(src, lambda d: d.update(active=False))
-    _edit(v2, lambda d: d.update(version=2, score_threshold=50))
     config = load_config(config_dir)
     assert config.pattern("golden_cross_uptrend").version == 2
+    assert not config.pattern("golden_cross_uptrend", 1).active
     assert config.pattern("golden_cross_uptrend", 1).score_threshold == 75
     with pytest.raises(ConfigError, match="v3"):
         config.pattern("golden_cross_uptrend", 3)

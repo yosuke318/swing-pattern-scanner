@@ -56,7 +56,7 @@ def make_config(config_dir: Path, **notification) -> Config:
 
 
 CONFIG = load_config(ROOT / "config")
-PATTERN = CONFIG.pattern("golden_cross_uptrend")
+PATTERN = CONFIG.pattern("golden_cross_uptrend", 1)
 
 
 def row(**overrides) -> dict:
@@ -159,7 +159,7 @@ def test_threshold_and_near_miss_come_from_settings(config_dir: Path) -> None:
     data["score_threshold"] = 100
     path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
     config = make_config(config_dir, near_miss={"min_score": 75, "max_items": 1})
-    pattern = config.pattern("golden_cross_uptrend")
+    pattern = config.pattern("golden_cross_uptrend", 1)
     js = [
         judgement("1001", pattern=pattern),
         judgement("1002", pattern=pattern, adx14=15.0),

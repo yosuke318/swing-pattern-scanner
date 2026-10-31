@@ -88,6 +88,13 @@ _SPECS = [
         lambda latest, prior: latest > prior,
     ),
     KeySpec(
+        "close_above_swing_high",
+        "bool",
+        ("close", "swing_high_price"),
+        "終値 > 直近の確定スイング高値（高値の更新）",
+        lambda close, high: close > high,
+    ),
+    KeySpec(
         "hh_hl_uptrend",
         "bool",
         ("hh_hl_structure",),

@@ -94,6 +94,8 @@ uv run swing-scanner run --market US --date 2026-11-02   # 対象日を指定（
 - 本番に適用するバージョンは `active: true` の1つだけ。切り替えは active を書き換えるコミットで行い、戻すときは revert する。
 - 一度使ったバージョンのファイルは書き換えない。閾値を変えるときは新しいバージョンのファイルを作る（過去の判定ログがどの閾値で出たか分からなくなるため）。
 - バックテストでは `Config.pattern(pattern_id, version)` で過去のバージョンを指定して読み込む。
+- 条件に `required: true` を付けると、スコアにかかわらずその条件が成立しないと通知しない（判定ログの `excluded_reason` に「必須条件未達」と残る）。初期パターンはすべて `relative_strength_20d >= 0` を必須にして、相対強度が弱い銘柄を見送る。
+- 初期パターンは4種（基本設計書 4.5）: `golden_cross_uptrend`（通常ボラ）、`ma_pullback`（低・通常ボラ、MA25 への浅い押し目）、`squeeze_breakout`（低ボラ、高値ブレイク）、`volume_breakout`（高ボラ、出来高を伴う高値ブレイク）。いずれも `trend: [uptrend]` だけに当て、下降トレンドでは買いシグナルを出さない。閾値と出口は暫定値で、バックテストで決める。
 - `key` は下の一覧にあるものだけ使える。一覧に無い key、真偽値の key に数値を書く（またはその逆）と読み込み時にエラーになる。key は一度使ったら消さず、意味も変えない。
 
 ### パターン条件で使える key
@@ -119,6 +121,7 @@ uv run swing-scanner run --market US --date 2026-11-02   # 対象日を指定（
 | `plus_di_above_minus_di` | 真偽値 | +DI > -DI（上向きのトレンド） |
 | `swing_low_higher_than_prior` | 真偽値 | 直近の確定スイング安値 > その前の安値 |
 | `swing_high_higher_than_prior` | 真偽値 | 直近の確定スイング高値 > その前の高値 |
+| `close_above_swing_high` | 真偽値 | 終値 > 直近の確定スイング高値（高値の更新） |
 | `hh_hl_uptrend` | 真偽値 | hh_hl_structure が uptrend |
 | `atr14` | 数値 | ATR14（Wilder） |
 | `atr14_pct` | 数値 | ATR14 ÷ 終値（比率） |

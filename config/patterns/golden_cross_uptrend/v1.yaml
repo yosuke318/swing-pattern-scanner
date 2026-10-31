@@ -3,7 +3,7 @@ pattern_id: golden_cross_uptrend
 version: 1
 name: ゴールデンクロス＋上昇構造
 category: trend
-active: true
+active: false
 regimes:
   vol: [normal]
   trend: [uptrend]
