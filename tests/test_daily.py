@@ -217,6 +217,23 @@ def test_partial_failure_continues_with_warning(tmp_path: Path) -> None:
     assert "8306 三菱UFJフィナンシャル・グループ: 2026-10-30 のデータがありません" in body
 
 
+def test_warnings_without_exclusion_keep_success(tmp_path: Path) -> None:
+    config = load_config(ROOT / "config")
+    src = source()
+    df = src.frames["7203"].copy()
+    df.loc[df.index[-50], ["open", "high", "low", "close", "volume"]] = None  # 過去の売買なしの日
+    src.frames["7203"] = df
+    src.frames["6758"] = src.frames["6758"].drop(index=src.frames["6758"].index[-30])  # 歯抜け
+    result = run(config, tmp_path, src)
+    assert result.status == "success"
+    assert {r["symbol"] for r in read_csv(tmp_path / "results/2026-10.csv")} == set(JP)
+    assert any(w.startswith("7203 トヨタ自動車: 売買なしの日が1日") for w in result.report.warnings)
+    assert any(
+        w.startswith("6758 ソニーグループ: 立会日の行が1日ありません")
+        for w in result.report.warnings
+    )
+
+
 def test_benchmark_failure_is_a_warning(tmp_path: Path) -> None:
     config = load_config(ROOT / "config")
     result = run(config, tmp_path, source(fail={"1306"}))

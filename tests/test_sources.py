@@ -143,7 +143,7 @@ def test_jquants_source_fetches_by_symbol_with_from_to() -> None:
             ("daily_quotes", "data"),
         )
     ]
-    assert validate_ohlcv(df, D(2024, 10, 1)) is None
+    assert validate_ohlcv(df, D(2024, 10, 1)).ok
 
 
 def test_jquants_source_authenticates_lazily() -> None:
@@ -239,7 +239,7 @@ def test_alpaca_source_requests_split_adjusted_sip(monkeypatch) -> None:
     assert client.calls[1][1]["page_token"] == "p2"
     # end の翌日まで取り、対象日より後の足は落とす
     assert df["date"].tolist() == [D(2024, 6, 10), D(2024, 6, 11)]
-    assert validate_ohlcv(df, D(2024, 6, 11)) is None
+    assert validate_ohlcv(df, D(2024, 6, 11)).ok
 
 
 def test_alpaca_feed_can_be_switched(monkeypatch) -> None:
