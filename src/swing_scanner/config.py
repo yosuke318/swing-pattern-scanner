@@ -74,14 +74,28 @@ class ScoringSettings(_Model):
     default_score_threshold: Annotated[Number, Field(ge=0, le=100)]
 
 
-class ChannelSettings(_Model):
+class NearMissSettings(_Model):
+    # しきい値未満でもこの点数以上なら「惜しかった銘柄」として通知に載せる
+    min_score: Annotated[Number, Field(ge=0, le=100)]
+    # 載せる件数の上限。0 なら載せない
+    max_items: Annotated[StrictInt, Field(ge=0)]
+
+
+class EmailSettings(_Model):
     enabled: StrictBool
+
+
+class LineSettings(_Model):
+    enabled: StrictBool
+    # シグナルが無い日も LINE に送るか（メールは該当なしの日も必ず送る）
+    send_when_empty: StrictBool
 
 
 class NotificationSettings(_Model):
     cooldown_business_days: Annotated[StrictInt, Field(ge=0)]
-    email: ChannelSettings
-    line: ChannelSettings
+    near_miss: NearMissSettings
+    email: EmailSettings
+    line: LineSettings
 
 
 class FilterSettings(_Model):

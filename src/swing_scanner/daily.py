@@ -1,12 +1,16 @@
 """日次処理（基本設計書 5.2）。手順3以降（取得・判定・通知）は [1-10] で繋ぐ。"""
 
 import datetime as dt
+from collections.abc import Sequence
 from pathlib import Path
 
-from swing_scanner.config import Market, Pattern
+from swing_scanner.config import Config, Market, Pattern
 from swing_scanner.filters import FilterOutcome
+from swing_scanner.notify.cooldown import prune, record_notified
+from swing_scanner.notify.message import Report
+from swing_scanner.notify.send import EmailChannel, LineChannel, deliver
 from swing_scanner.rules.engine import Evaluation
-from swing_scanner.state import ResultRow, RunRecord, append_run
+from swing_scanner.state import ResultRow, RunRecord, append_run, load_notified, save_notified
 from swing_scanner.trading_calendar import TargetDay, TradingCalendar, resolve_target
 
 
@@ -76,3 +80,28 @@ def build_result_row(
         commit_sha=commit_sha,
         evaluated_at=evaluated_at,
     )
+
+
+def send_report(
+    report: Report,
+    config: Config,
+    state_dir: Path,
+    sessions: Sequence[dt.date] | None = None,
+    email: EmailChannel | None = None,
+    line: LineChannel | None = None,
+) -> list[str]:
+    """手順10〜11の前半: 通知を送り、送れたら notified.json を更新する。
+
+    送信してから記録する。送信に失敗したら NotifyError がそのまま上がり、notified.json は
+    更新しない（再実行で送り直せる。逆の順序だと送れていないのに送信済みになりシグナルが消える）。
+    記録のついでに、クールダウンを過ぎたエントリを消す。
+    """
+    sent = deliver(report, config.settings.notification, email, line)
+    days = config.settings.notification.cooldown_business_days
+    notified = record_notified(
+        load_notified(state_dir),
+        [(j.symbol, j.pattern.pattern_id) for j in report.signals],
+        report.target_date,
+    )
+    save_notified(state_dir, prune(notified, report.target_date, days, sessions))
+    return sent

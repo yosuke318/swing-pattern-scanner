@@ -35,10 +35,17 @@ scoring:
 notification:
   # 同一銘柄・同一パターンを再通知しない営業日数
   cooldown_business_days: 5
+  # しきい値未満でも min_score 点以上の銘柄を「惜しかった銘柄」として最大 max_items 件載せる
+  near_miss:
+    min_score: 50
+    max_items: 3
+  # メールは該当なしの日も送る（実行が止まっていないと分かるように）
   email:
     enabled: true
+  # LINE は要点だけ。send_when_empty: false ならシグナルがある日だけ送る
   line:
     enabled: false
+    send_when_empty: false
 
 # 除外フィルタ。除外しても判定ログには残す
 filters:

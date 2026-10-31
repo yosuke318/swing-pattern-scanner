@@ -32,6 +32,12 @@ class KeySpec:
     description: str
     # 列の値から key の値を作る。None なら1つ目の列の値をそのまま使う
     derive: Callable[..., Any] | None = None
+    # 通知文での表示名。None なら description
+    label: str | None = None
+
+    @property
+    def display_name(self) -> str:
+        return self.label or self.description
 
     def value(self, row: Mapping[str, Any]) -> float | bool | None:
         """行から値を取り出す。元の列のどれかが欠けていれば None（評価不能）。"""
@@ -59,6 +65,7 @@ _SPECS = [
         "number",
         ("days_since_golden_cross",),
         "直近のゴールデンクロスからの営業日数（当日 0、未発生は inf）。`<=` で「X日以内」",
+        label="ゴールデンクロスからの営業日数",
     ),
     _column("golden_cross_flag", "bool", "当日ゴールデンクロスが発生した"),
     _column("adx14", "number", "ADX14（トレンドの強さ）"),

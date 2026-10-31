@@ -154,6 +154,26 @@ uv run swing-scanner run --market US --date 2026-11-02   # 対象日を指定（
 - 同じ対象日を再実行したら、`(date, market, symbol, pattern_id, version)` が同じ行を置き換える（二重に追記しない）。
 - `commit_sha` とパターンのバージョンから、当時のコードと設定で判定を再現できる。
 
+## 通知
+
+`src/swing_scanner/notify/`。1回の実行（市場ごとに1日1回）で1通にまとめる。
+
+- 通知対象: スコアがパターンのしきい値（`score_threshold`、省略時は `scoring.default_score_threshold`）以上で、レジームが対象、除外されておらず、クールダウン期間外のもの。スコア順に並べる。
+- 惜しかった銘柄: しきい値未満で `notification.near_miss.min_score` 以上のものを、最大 `max_items` 件載せる。
+- メールは根拠（条件ごとの合否と実測値）・エントリーの目安・損切り・利確・最大保有日数・注意を含め、該当なしの日も送る。LINE は要点だけで、`line.send_when_empty: false` ならシグナルがある日だけ送る。件名は `【JP】2026-11-02 シグナル2件 / 警告1件`、`【US】2026-11-02 該当なし` の形。
+- クールダウン: 同じ銘柄・同じパターンは、最終通知日から `notification.cooldown_business_days` 営業日経つまで再送しない。`state/notified.json` に最終通知日を持ち、期限を過ぎたエントリは記録のたびに消す。同じ日の再実行では送ったものを弾く（`--force` 相当の指定で同じ日の分だけ送り直せる）。
+- 送ってから記録する。送信に失敗したら異常終了し、`notified.json` を更新しない（再実行で送り直せる）。
+
+認証情報は環境変数（本番は GitHub Actions Secrets）から読む。有効にしたチャネルの認証情報が無ければ異常終了する。
+
+| 環境変数 | 内容 |
+| -- | -- |
+| `MAIL_USER` | 送信元の Gmail アドレス |
+| `MAIL_APP_PASSWORD` | Gmail のアプリ パスワード（空白は取り除く） |
+| `MAIL_TO` | 送り先。省略すると自分宛て |
+| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API のチャネルアクセストークン |
+| `LINE_TO` | 送り先のユーザー ID |
+
 ## 状態ファイルの書き込み
 
 日本株と米国株のジョブはどちらも同じ `state/` を書く。ファイルを市場別に分けず、ワークフローの `concurrency` を共通のグループにして直列化する。
