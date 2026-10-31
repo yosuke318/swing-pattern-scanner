@@ -64,6 +64,8 @@ uv run swing-scanner run --market US --date 2026-11-02   # 対象日を指定（
 - ATR14 は Wilder の平滑化（最初の14日の単純平均を初期値にする。TradingView の `ta.atr(14)` と同じ）。True Range は前日終値との窓を含む。
 - ADX14 / +DI / -DI は TradingView の `ta.dmi(14, 14)` と同じ定義（Wilder の平滑化）。値動きが全く無い期間は 0。
 - `atr14_pct` は ATR14 ÷ 終値の比率（0.023 = 2.3%）。`atr252_percentile` は当日を含む直近252営業日の `atr14_pct` の中での順位（0〜100）。
+- スイング高値は「高値が前 N 日より高く、後 N 日以上」の日（安値も同様）。N は固定で既定 3（`features/swing.py` の `SWING_WINDOW`、引数で変えてバックテストで比較する）。i 日目のスイングは i+N 日目に確定したものとして扱い、各行はその日までに確定したスイングだけを使う。
+- `hh_hl_structure` は直近2つのスイング高値・安値がともに切り上がれば uptrend、ともに切り下がれば downtrend、それ以外は unclear。
 - 計算期間が足りない値は NaN（評価不能）。上場から252営業日未満の銘柄は `atr252_percentile` が NaN になる。
 
 ## 設定ファイルの決まり
