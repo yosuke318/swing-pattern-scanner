@@ -1,5 +1,6 @@
 import csv
 import datetime as dt
+import json
 from pathlib import Path
 
 from swing_scanner.provenance import commit_sha
@@ -8,11 +9,11 @@ from swing_scanner.state import (
     RUN_COLUMNS,
     ResultRow,
     RunRecord,
-    append_results,
     append_run,
     load_notified,
     notified_key,
     save_notified,
+    upsert_results,
 )
 
 REPO_STATE = Path(__file__).resolve().parents[1] / "state"
@@ -46,8 +47,8 @@ def _read(path: Path) -> list[dict[str, str]]:
 
 
 def test_results_are_split_by_month(tmp_path: Path):
-    append_results(tmp_path, [_row(dt.date(2026, 10, 30)), _row(dt.date(2026, 11, 2))])
-    append_results(tmp_path, [_row(dt.date(2026, 10, 31), symbol="6758", stop=None)])
+    upsert_results(tmp_path, [_row(dt.date(2026, 10, 30)), _row(dt.date(2026, 11, 2))])
+    upsert_results(tmp_path, [_row(dt.date(2026, 10, 31), symbol="6758", stop=None)])
 
     october = _read(tmp_path / "results/2026-10.csv")
     assert [r["symbol"] for r in october] == ["7203", "6758"]
@@ -57,6 +58,31 @@ def test_results_are_split_by_month(tmp_path: Path):
     assert october[0]["evaluated_at"] == "2026-10-30T18:05:00+00:00"
     assert october[1]["stop"] == ""
     assert len(_read(tmp_path / "results/2026-11.csv")) == 1
+
+
+def test_rerun_replaces_rows_with_same_key(tmp_path: Path):
+    day = dt.date(2026, 10, 30)
+    upsert_results(tmp_path, [_row(day), _row(day, symbol="6758"), _row(day, version=2)])
+    upsert_results(tmp_path, [_row(day, score=50.0, matched=False)])
+    upsert_results(tmp_path, [_row(dt.date(2026, 10, 29))])
+    rows = _read(tmp_path / "results/2026-10.csv")
+    assert [(r["date"], r["symbol"], r["version"], r["score"]) for r in rows] == [
+        ("2026-10-30", "6758", "1", "75.0"),
+        ("2026-10-30", "7203", "2", "75.0"),
+        ("2026-10-30", "7203", "1", "50.0"),
+        ("2026-10-29", "7203", "1", "75.0"),
+    ]
+    assert rows[2]["matched"] == "false"
+
+
+def test_results_keep_commas_and_quotes_in_breakdown(tmp_path: Path):
+    day = dt.date(2026, 10, 30)
+    breakdown = [{"key": "adx14", "note": 'a, "b"'}]
+    upsert_results(tmp_path, [_row(day, breakdown=breakdown, excluded_reason="流動性; 決算")])
+    upsert_results(tmp_path, [_row(day, symbol="6758")])
+    first = _read(tmp_path / "results/2026-10.csv")[0]
+    assert json.loads(first["breakdown"]) == breakdown
+    assert first["excluded_reason"] == "流動性; 決算"
 
 
 def test_run_log_matches_committed_header(tmp_path: Path):

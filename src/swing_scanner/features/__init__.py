@@ -1,0 +1,12 @@
+"""指標計算（基本設計書 3.6・4章）。日次処理とバックテストで同じ関数を使う。
+
+入力は1銘柄ぶんの日足 DataFrame（列: date / open / high / low / close / volume、日付の昇順、
+行は営業日だけ）。各関数は列を足した新しい DataFrame を返し、入力は書き換えない。
+
+計算期間が足りない行は NaN にする。判定側（[3-2]）は NaN を「条件不成立」ではなく
+「評価不能」として扱う。各行の値は、その日までのデータだけで決まる（先読みしない）。
+"""
+
+from swing_scanner.features.pipeline import EXTRA_COLUMNS, FEATURE_COLUMNS, compute_features
+
+__all__ = ["EXTRA_COLUMNS", "FEATURE_COLUMNS", "compute_features"]

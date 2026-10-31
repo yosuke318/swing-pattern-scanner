@@ -43,15 +43,174 @@ uv run ruff check . && uv run ruff format --check .
 uv run swing-scanner validate-config
 ```
 
+## 日次実行
+
+```bash
+uv run swing-scanner run --market JP                        # 対象日は現地時刻で直近に引けた日
+uv run swing-scanner run --market US --date 2026-11-02      # 対象日を指定（手動実行）
+uv run swing-scanner run --market JP --dry-run              # 通知を送らず state も書かない。通知文を表示する
+uv run swing-scanner run --market JP --force                # 同じ対象日の通知を送り直す
+uv run swing-scanner run --market JP --data-dir data/ --calendar weekdays --dry-run   # API なしで動作確認
+```
+
+基本設計書 5.2 の手順を `src/swing_scanner/daily.py` の `run_daily` が順に実行し、手順ごとの件数と所要時間を標準エラーに出す。
+
+- 実行の先頭で取引カレンダー（日本株は J-Quants、米国株は Alpaca）を引き、対象日が休場日なら `runs.csv` に `skipped_holiday` を記録して正常終了する。休場日リストは自前で持たない。米国株は日本時間の翌朝に動くので、対象日は NY 時間の日付になる。
+- 銘柄単位の失敗（取得失敗、対象日のデータが無い、欠損・異常値）はその銘柄だけ外して続け、通知に警告として載せる（`runs.csv` は partial）。全銘柄の取得失敗、カレンダーの取得失敗、送信失敗は異常終了する。
+- 送ってから記録する。送信に失敗したら判定ログ・`notified.json`・`runs.csv` のどれも更新しない（再実行で送り直せる）。
+- 同じ対象日を再実行しても、判定ログは置き換えになり二重にならない。送信済みのシグナルはクールダウンで弾き、その日の通知を送り済みで新しいシグナルも無ければ通知は送らない。`--force` を付けると同じ日の分を送り直す。
+- 終了コードは正常（休場日を含む）が 0、異常が 1。
+- `--data-dir` を付けると日足を `<DIR>/<銘柄コード>.csv`（列: date / open / high / low / close / volume、任意で trading_value）から読む。ベンチマーク（1306 / SPY）の CSV も要る。API からの取得（[1-4] [1-5]）はまだ無いので、今は `--data-dir` が必須。`--calendar weekdays` は土日だけを休場とし、API の認証情報なしで試せる。
+- 認証情報は環境変数から読む。J-Quants は `JQUANTS_API_KEY`（v2）、または `JQUANTS_REFRESH_TOKEN` か `JQUANTS_MAIL` + `JQUANTS_PASSWORD`（v1）。Alpaca は `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`。通知の認証情報は下の「通知」を参照。
+
+## 指標計算の決まり
+
+`src/swing_scanner/features/` にある。入口は `compute_features(ohlcv, benchmark, settings.features)` で、日次処理（約300営業日を入れて最終行を使う）とバックテスト（最大5年を入れて全行を使う）が同じ関数を使う。出力の列は基本設計書 3.6 の列のあとに、判定やログで使う補助の列（`dead_cross_flag`、`prior_swing_high_price`、`swing_low_higher_than_prior`、`close_minus_ma<n>_atr_ratio`）が並ぶ。
+
+パラメータ（ゴールデンクロスの組、スイングの N、HH/HL で比べる個数、`trend_regime` の方式、ヒステリシス）は `settings.yaml` の `features` に書く。計算方式を変えるとバックテスト結果が再現できなくなるので、変えるときはここも直す。
+
+- 移動平均は単純移動平均（ma5 / ma25 / ma75 / ma200）。
+- ゴールデンクロスは「前日 MA短期 ≤ MA長期、当日 MA短期 > MA長期」。組は `features.golden_cross_pair`（25 / 75）。`days_since_golden_cross` は直近の GD からの営業日数（当日 0）で、まだ GD が無ければ `inf`。
+- ATR14 は Wilder の平滑化（最初の14日の単純平均を初期値にする。TradingView の `ta.atr(14)` と同じ）。True Range は前日終値との窓を含む。
+- ADX14 / +DI / -DI は TradingView の `ta.dmi(14, 14)` と同じ定義（Wilder の平滑化）。値動きが全く無い期間は 0。
+- `atr14_pct` は ATR14 ÷ 終値の比率（0.023 = 2.3%）。`atr252_percentile` は当日を含む直近252営業日の `atr14_pct` の中での順位（0〜100）。
+- スイング高値は「高値が前 N 日より高く、後 N 日以上」の日（安値も同様）。N は固定値で `features.swing_window`（3）。バックテストで比べて決める。i 日目のスイングは i+N 日目に確定したものとして扱い、各行はその日までに確定したスイングだけを使う。
+- `hh_hl_structure` は直近2つのスイング高値・安値がともに切り上がれば uptrend、ともに切り下がれば downtrend、それ以外は unclear。
+- `vol_regime` は `atr252_percentile` が 20 以下で low、80 以上で high、それ以外は normal。
+- `trend_regime` は ADX（ADX14 ≥ 20 と ±DI の向き）・HH/HL 構造・MA の並び（終値・MA25・MA75）の3つのうち、2つ以上が同じ向きで逆向きが無ければその向き、それ以外は range（`features.trend_method: vote`）。単独の方式（adx / structure / ma）にも切り替えられ、実データの該当日数を比べて決め直す。区分が連続 k 日続くまで切り替えないヒステリシス（`features.hysteresis_days`）は既定で無し（1）。
+- `trading_value_20d` は 20 日平均売買代金。API の売買代金（`trading_value` 列）を使い、無ければ終値 × 出来高。
+- `volume_ratio_20d` は当日出来高 ÷ 前日までの20日平均出来高（当日を分母に入れない）。
+- `relative_strength_20d` は銘柄と指数ETFの20日リターンの差。指数を取得できなかった日や、指数に無い日付は NaN（評価不能）。
+- 計算期間が足りない値は NaN（評価不能）。上場から252営業日未満の銘柄は `atr252_percentile` が NaN になる。
+
 ## 設定ファイルの決まり
 
-- `symbols.yaml` の `symbol` は数字だけのコードでも文字列で書く（`"7203"`）。同じ市場・同じコードの重複はエラー。
+- `symbols.yaml` の `symbol` は、日本株は4桁のコードを文字列で書く（`"7203"`）。米国株はティッカー（`BRK.B` など）。形式違いと、同じ市場・同じコードの重複はエラー。
+- 監視銘柄の追加は行を足してコミットする（GitHub の Web 編集でもよい）。除外は行を消さず `watched: false` にする。
+- 指数ETF（1306 / SPY）は `symbols.yaml` に入れず、`settings.yaml` の `markets.<市場>.benchmark_symbol` で持つ。通知対象にはしない。
 - `events.yaml` には `symbols.yaml` にある銘柄だけを書ける。
 - パターン定義のファイル名は `v<version>.yaml`、ディレクトリ名は `pattern_id` と一致させる。同じ `pattern_id` で `active: true` は1バージョンだけ。
 - `conditions` の `weight` の合計は 100。`between` の `value` は `[下限, 上限]`、真偽値は `==` / `!=` でだけ比べる。
 - `score_threshold` を省略したパターンは `settings.yaml` の `scoring.default_score_threshold` を使う。
 - 寄り付きの窓開けでエントリーを見送るしきい値（g×ATR）は `exit.skip_gap_atr_mult` に書く。省略時は見送らない。
 - 認証情報と通知先のアドレス・トークンは GitHub Actions Secrets に置き、リポジトリには書かない。
+
+## パターン定義と判定
+
+パターン定義は `config/patterns/<pattern_id>/v<n>.yaml` に置く（書式は基本設計書 3.3、上の「設定ファイルの決まり」も参照）。
+
+- 本番に適用するバージョンは `active: true` の1つだけ。切り替えは active を書き換えるコミットで行い、戻すときは revert する。
+- 一度使ったバージョンのファイルは書き換えない。閾値を変えるときは新しいバージョンのファイルを作る（過去の判定ログがどの閾値で出たか分からなくなるため）。
+- バックテストでは `Config.pattern(pattern_id, version)` で過去のバージョンを指定して読み込む。
+- 条件に `required: true` を付けると、スコアにかかわらずその条件が成立しないと通知しない（判定ログの `excluded_reason` に「必須条件未達」と残る）。初期パターンはすべて `relative_strength_20d >= 0` を必須にして、相対強度が弱い銘柄を見送る。
+- 初期パターンは4種（基本設計書 4.5）: `golden_cross_uptrend`（通常ボラ）、`ma_pullback`（低・通常ボラ、MA25 への浅い押し目）、`squeeze_breakout`（低ボラ、高値ブレイク）、`volume_breakout`（高ボラ、出来高を伴う高値ブレイク）。いずれも `trend: [uptrend]` だけに当て、下降トレンドでは買いシグナルを出さない。閾値と出口は暫定値で、バックテストで決める。
+- `key` は下の一覧にあるものだけ使える。一覧に無い key、真偽値の key に数値を書く（またはその逆）と読み込み時にエラーになる。key は一度使ったら消さず、意味も変えない。
+
+### パターン条件で使える key
+
+`src/swing_scanner/rules/keys.py` で定義している。一覧を変えたらこの表も直す（テストで突き合わせる）。
+
+| key | 型 | 内容 |
+| -- | -- | -- |
+| `close` | 数値 | 終値 |
+| `ma5` | 数値 | 5日単純移動平均 |
+| `ma25` | 数値 | 25日単純移動平均 |
+| `ma75` | 数値 | 75日単純移動平均 |
+| `ma200` | 数値 | 200日単純移動平均 |
+| `close_minus_ma5_atr_ratio` | 数値 | (終値 − MA5) ÷ ATR14 |
+| `close_minus_ma25_atr_ratio` | 数値 | (終値 − MA25) ÷ ATR14 |
+| `close_minus_ma75_atr_ratio` | 数値 | (終値 − MA75) ÷ ATR14 |
+| `close_minus_ma200_atr_ratio` | 数値 | (終値 − MA200) ÷ ATR14 |
+| `golden_cross_within_days` | 数値 | 直近のゴールデンクロスからの営業日数（当日 0、未発生は inf）。`<=` で「X日以内」 |
+| `golden_cross_flag` | 真偽値 | 当日ゴールデンクロスが発生した |
+| `adx14` | 数値 | ADX14（トレンドの強さ） |
+| `plus_di` | 数値 | +DI |
+| `minus_di` | 数値 | -DI |
+| `plus_di_above_minus_di` | 真偽値 | +DI > -DI（上向きのトレンド） |
+| `swing_low_higher_than_prior` | 真偽値 | 直近の確定スイング安値 > その前の安値 |
+| `swing_high_higher_than_prior` | 真偽値 | 直近の確定スイング高値 > その前の高値 |
+| `close_above_swing_high` | 真偽値 | 終値 > 直近の確定スイング高値（高値の更新） |
+| `hh_hl_uptrend` | 真偽値 | hh_hl_structure が uptrend |
+| `atr14` | 数値 | ATR14（Wilder） |
+| `atr14_pct` | 数値 | ATR14 ÷ 終値（比率） |
+| `atr252_percentile` | 数値 | atr14_pct の直近252日での順位（0〜100） |
+| `volume_ratio_20d` | 数値 | 当日出来高 ÷ 前日までの20日平均出来高 |
+| `relative_strength_20d` | 数値 | 20日リターンの指数ETFとの差（比率） |
+| `trading_value_20d` | 数値 | 20日平均売買代金 |
+
+### 判定（ルールエンジン）
+
+`src/swing_scanner/rules/engine.py` の `evaluate(pattern, row)`。日次処理とバックテストで同じ関数を使う。
+
+- 条件ごとに passed / failed / unevaluable（評価不能）を返す。指標が欠けている条件は評価不能で、スコアに入らず、全条件合致（matched）にもならない。
+- `between` は両端を含む（下限 ≤ 値 ≤ 上限）。
+- スコアは passed の条件の weight の合計（100点満点）。matched は全条件 passed で、かつレジームが対象のとき。
+- パターンの `regimes` に当日の `vol_regime` / `trend_regime` が無ければ対象外（matched にせず、理由を残す）。レジームが評価不能のときも対象外。
+- 出口（基本設計書 4.6）は当日終値を基準にした目安。損切りは「直近スイング安値」と「終値 − k×ATR」の浅い方（スイング安値が無い・終値以上なら ATR 側）、利確は「終値 + m×ATR」。バックテストは `exit_plan` にエントリー価格を渡して計算し直す。
+
+### 除外フィルタ
+
+`src/swing_scanner/filters.py`。判定の後、通知の前に当てる。除外しても判定ログには残す。
+
+- 流動性: `trading_value_20d` が `markets.<市場>.min_trading_value_20d` 未満なら除外。20日分そろわず値が無いときも除外する。
+- 決算またぎ: 判定日から `max_holding_days` 営業日先までに `events.yaml` の決算日があれば除外（判定日当日を含む）。営業日は取引カレンダーで数える。
+- 市場環境: 指数ETFの `trend_regime` が downtrend のとき、`market_filter.mode` が annotate なら通知に注記、suppress なら除外。指数の区分が分からない日は注記だけ付ける。
+- 流動性と決算は `filters.liquidity` / `filters.earnings`、市場環境は `market_filter.mode: off` で個別に止められる。
+- 決算日の登録漏れ: 直近 `filters.earnings_registration_lookback_days`（90）日以内（未来を含む）に決算日の登録が無い監視銘柄を、通知で警告する。決算発表が済んだら、次の決算日を登録しておく。
+
+### 判定ログ（state/results/）
+
+- 判定した行はすべて残す（通知しなかったもの、除外したもの、レジーム対象外のものも）。
+- `excluded_reason` に通知しなかった理由（「レジーム対象外: …」「流動性: …」「決算: …」「市場環境: …」）を `; ` でつないで入れる。`breakdown` は条件ごとの key・op・閾値・実測値・合否（評価不能は null）・weight の JSON。
+- 同じ対象日を再実行したら、`(date, market, symbol, pattern_id, version)` が同じ行を置き換える（二重に追記しない）。
+- `commit_sha` とパターンのバージョンから、当時のコードと設定で判定を再現できる。
+
+## 通知
+
+`src/swing_scanner/notify/`。1回の実行（市場ごとに1日1回）で1通にまとめる。
+
+- 通知対象: スコアがパターンのしきい値（`score_threshold`、省略時は `scoring.default_score_threshold`）以上で、レジームが対象、除外されておらず、クールダウン期間外のもの。スコア順に並べる。
+- 惜しかった銘柄: しきい値未満で `notification.near_miss.min_score` 以上のものを、最大 `max_items` 件載せる。
+- メールは根拠（条件ごとの合否と実測値）・エントリーの目安・損切り・利確・最大保有日数・注意を含め、該当なしの日も送る。LINE は要点だけで、`line.send_when_empty: false` ならシグナルがある日だけ送る。件名は `【JP】2026-11-02 シグナル2件 / 警告1件`、`【US】2026-11-02 該当なし` の形。
+- クールダウン: 同じ銘柄・同じパターンは、最終通知日から `notification.cooldown_business_days` 営業日経つまで再送しない。`state/notified.json` に最終通知日を持ち、期限を過ぎたエントリは記録のたびに消す。同じ日の再実行では送ったものを弾く（`--force` 相当の指定で同じ日の分だけ送り直せる）。
+- 送ってから記録する。送信に失敗したら異常終了し、`notified.json` を更新しない（再実行で送り直せる）。
+
+認証情報は環境変数（本番は GitHub Actions Secrets）から読む。有効にしたチャネルの認証情報が無ければ異常終了する。
+
+| 環境変数 | 内容 |
+| -- | -- |
+| `MAIL_USER` | 送信元の Gmail アドレス |
+| `MAIL_APP_PASSWORD` | Gmail のアプリ パスワード（空白は取り除く） |
+| `MAIL_TO` | 送り先。省略すると自分宛て |
+| `LINE_CHANNEL_ACCESS_TOKEN` | LINE Messaging API のチャネルアクセストークン |
+| `LINE_TO` | 送り先のユーザー ID |
+
+## GitHub Actions での運用
+
+`.github/workflows/daily.yml` が日次処理を動かし、`state/` に差分があればコミット・push する。
+
+| 市場 | 起動（日本時間） | cron（UTC） |
+| -- | -- | -- |
+| 日本株 | 平日 19:17（暫定。J-Quants の更新時刻を調べて見直す） | `17 10 * * 1-5` |
+| 米国株 | 火〜土 07:43（米国の引けは夏時間 5:00 / 冬時間 6:00） | `43 22 * * 1-5` |
+
+- 定期実行は、リポジトリ変数 `DAILY_ENABLED` を `true` にしたときだけ動く（Settings → Secrets and variables → Actions → Variables）。データ取得（[1-4] [1-5]）がそろうまでは止めておく。
+- 手動実行（Actions → Daily scan → Run workflow）で、市場・対象日・送り直し（force）・dry-run を指定できる。cron の抜けや遅延で届かなかった日はここから再実行する。
+- 両市場のジョブは `concurrency: state` で直列に動く（同じ `state/` を書くため）。異常終了したときは state を書いていないので、コミットもしない。
+- 失敗すると GitHub から失敗通知メールが届く（定期実行の失敗は、ワークフローを最後に変更したユーザーに届く）。
+- cron は混雑時に数十分遅れることがあり、まれに実行されない。「該当なし」の日もメールが届くので、届かなければ抜けに気づける。
+- 定期実行は既定ブランチ（main）のワークフローだけが動く。
+
+Secrets（Settings → Secrets and variables → Actions → Secrets）に登録するもの。使わないものは登録しなくてよい。
+
+| Secret | 内容 |
+| -- | -- |
+| `JQUANTS_API_KEY` | J-Quants v2 の API キー（v1 なら下の2つのどちらか） |
+| `JQUANTS_REFRESH_TOKEN` | J-Quants v1 のリフレッシュトークン（1週間で切れるので無人運用には向かない） |
+| `JQUANTS_MAIL` / `JQUANTS_PASSWORD` | J-Quants v1 のメールアドレスとパスワード |
+| `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` | Alpaca の API キー |
+| `MAIL_USER` / `MAIL_APP_PASSWORD` / `MAIL_TO` | Gmail の送信元・アプリ パスワード・送り先 |
+| `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_TO` | LINE Messaging API（`notification.line.enabled: true` のときだけ要る） |
 
 ## 状態ファイルの書き込み
 

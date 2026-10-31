@@ -1,0 +1,22 @@
+# 出来高を伴う高値ブレイク（基本設計書 4.5: 高ボラ × 上昇トレンド。深い押し目は採用しない）。
+# 米国株の出来高は IEX フィードの一部だけなので、出来高の閾値を日本株と同じにしてよいかは要検証。
+# 閾値・出口は暫定値。バックテスト（[4-3] [4-4]）で決める。
+pattern_id: volume_breakout
+version: 1
+name: 出来高を伴うブレイクアウト
+category: breakout
+active: true
+regimes:
+  vol: [high]
+  trend: [uptrend]
+conditions:
+  - {key: close_above_swing_high, op: "==", value: true, weight: 25, required: true}
+  - {key: volume_ratio_20d, op: ">=", value: 2.0, weight: 25}
+  - {key: adx14, op: ">=", value: 25, weight: 25}
+  - {key: relative_strength_20d, op: ">=", value: 0, weight: 25, required: true}
+score_threshold: 75
+exit:
+  stop: {type: atr, atr_mult: 2.0}
+  target: {atr_mult: 3.0}
+  max_holding_days: 5
+  skip_gap_atr_mult: 1.0

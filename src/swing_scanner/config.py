@@ -24,9 +24,12 @@ from pydantic import (
     model_validator,
 )
 
+from swing_scanner.rules.keys import KEYS
+
 Market = Literal["JP", "US"]
 VolRegime = Literal["low", "normal", "high"]
 TrendRegime = Literal["uptrend", "range", "downtrend"]
+TrendMethod = Literal["adx", "structure", "ma", "vote"]
 
 PositiveInt = Annotated[StrictInt, Field(gt=0)]
 PositiveFloat = Annotated[StrictFloat | StrictInt, Field(gt=0)]
@@ -41,6 +44,19 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+# 日本株は4桁の銘柄コード（2024年以降の英字入りコード "130A" なども含む）。
+# J-Quants の5桁コードとの変換は取得層で吸収する。米国株は Alpaca のティッカー（"BRK.B" など）
+_SYMBOL_FORMATS: dict[str, re.Pattern[str]] = {
+    "JP": re.compile(r"^[0-9][0-9A-Z][0-9][0-9A-Z]$"),
+    "US": re.compile(r"^[A-Z]{1,5}(\.[A-Z])?$"),
+}
+
+
+def _check_symbol_format(market: str, symbol: str) -> None:
+    if not _SYMBOL_FORMATS[market].match(symbol):
+        raise ValueError(f"{market} の銘柄コードとして不正です: {symbol!r}")
+
+
 # --- settings.yaml ---------------------------------------------------------
 
 
@@ -50,32 +66,79 @@ class FetchSettings(_Model):
 
 class MarketSettings(_Model):
     min_trading_value_20d: Annotated[Number, Field(ge=0)]
-    index_symbol: StrictStr
+    # 市場環境フィルタと相対強度に使う指数ETF。監視銘柄とは別枠で、通知対象にはしない
+    benchmark_symbol: StrictStr
 
 
 class ScoringSettings(_Model):
     default_score_threshold: Annotated[Number, Field(ge=0, le=100)]
 
 
-class ChannelSettings(_Model):
+class NearMissSettings(_Model):
+    # しきい値未満でもこの点数以上なら「惜しかった銘柄」として通知に載せる
+    min_score: Annotated[Number, Field(ge=0, le=100)]
+    # 載せる件数の上限。0 なら載せない
+    max_items: Annotated[StrictInt, Field(ge=0)]
+
+
+class EmailSettings(_Model):
     enabled: StrictBool
+
+
+class LineSettings(_Model):
+    enabled: StrictBool
+    # シグナルが無い日も LINE に送るか（メールは該当なしの日も必ず送る）
+    send_when_empty: StrictBool
 
 
 class NotificationSettings(_Model):
     cooldown_business_days: Annotated[StrictInt, Field(ge=0)]
-    email: ChannelSettings
-    line: ChannelSettings
+    near_miss: NearMissSettings
+    email: EmailSettings
+    line: LineSettings
+
+
+class FilterSettings(_Model):
+    """除外フィルタ（基本設計書 4.7）の ON/OFF。市場環境は market_filter.mode で切り替える。"""
+
+    liquidity: StrictBool
+    earnings: StrictBool
+    # 決算日の登録漏れの警告。直近この日数以内（未来を含む）に決算日の登録が無い監視銘柄を警告する
+    earnings_registration_lookback_days: PositiveInt
 
 
 class MarketFilterSettings(_Model):
     mode: Literal["off", "annotate", "suppress"]
 
 
+class FeatureSettings(_Model):
+    """指標計算のパラメータ（features/）。日次処理とバックテストで同じ値を使う。"""
+
+    # ゴールデンクロスを判定する MA の組 [短期, 長期]
+    golden_cross_pair: tuple[PositiveInt, PositiveInt]
+    # スイング検出の前後の日数 N
+    swing_window: PositiveInt
+    # HH/HL 判定で比べるスイングの個数
+    structure_pairs: Annotated[StrictInt, Field(ge=2)]
+    trend_method: TrendMethod
+    # 区分が連続でこの日数続くまで切り替えない。1 なら遅らせない
+    hysteresis_days: PositiveInt
+
+    @model_validator(mode="after")
+    def _short_before_long(self) -> FeatureSettings:
+        short, long = self.golden_cross_pair
+        if short >= long:
+            raise ValueError(f"golden_cross_pair は [短期, 長期] で書いてください: {[short, long]}")
+        return self
+
+
 class Settings(_Model):
     fetch: FetchSettings
+    features: FeatureSettings
     markets: dict[Market, MarketSettings]
     scoring: ScoringSettings
     notification: NotificationSettings
+    filters: FilterSettings
     market_filter: MarketFilterSettings
 
     @model_validator(mode="after")
@@ -83,6 +146,8 @@ class Settings(_Model):
         missing = {"JP", "US"} - set(self.markets)
         if missing:
             raise ValueError(f"markets に {sorted(missing)} の設定がありません")
+        for market, m in self.markets.items():
+            _check_symbol_format(market, m.benchmark_symbol)
         return self
 
 
@@ -94,6 +159,11 @@ class Symbol(_Model):
     name: StrictStr
     market: Market
     watched: StrictBool
+
+    @model_validator(mode="after")
+    def _symbol_format(self) -> Symbol:
+        _check_symbol_format(self.market, self.symbol)
+        return self
 
 
 # --- events.yaml -----------------------------------------------------------
@@ -117,9 +187,20 @@ class Condition(_Model):
     op: Op
     value: StrictBool | Number | list[Number]
     weight: Annotated[Number, Field(gt=0)]
+    # true なら、スコアにかかわらずこの条件が成立しないと通知しない（相対強度が弱ければ見送り等）
+    required: StrictBool = False
 
     @model_validator(mode="after")
     def _value_matches_op(self) -> Condition:
+        spec = KEYS.get(self.key)
+        if spec is None:
+            raise ValueError(f"未知の key です: {self.key!r}（使える key は README の一覧を参照）")
+        if spec.type == "bool" and not isinstance(self.value, bool):
+            raise ValueError(
+                f"{self.key} は真偽値の key です。value は true / false で書いてください"
+            )
+        if spec.type == "number" and isinstance(self.value, bool):
+            raise ValueError(f"{self.key} は数値の key です。value に真偽値は使えません")
         if self.op == "between":
             if not isinstance(self.value, list) or len(self.value) != 2:
                 raise ValueError(f"{self.key}: between の value は [下限, 上限] で書いてください")
@@ -193,6 +274,19 @@ class Config(_Model):
 
     def active_patterns(self) -> list[Pattern]:
         return [p for p in self.patterns if p.active]
+
+    def pattern(self, pattern_id: str, version: int | None = None) -> Pattern:
+        """pattern_id のパターンを返す。version を省略すると active なバージョン。
+
+        バックテストで過去のバージョンを指定して読み込むときに使う。
+        """
+        for p in self.patterns:
+            if p.pattern_id == pattern_id and (
+                p.version == version or (version is None and p.active)
+            ):
+                return p
+        which = f"v{version}" if version is not None else "active なバージョン"
+        raise ConfigError(f"パターン {pattern_id} の {which} がありません")
 
     def score_threshold(self, pattern: Pattern) -> float:
         if pattern.score_threshold is not None:
@@ -270,6 +364,11 @@ def load_config(config_dir: Path) -> Config:
         if key in seen:
             raise ConfigError(f"{symbols_path}: 銘柄が重複しています: {s.market} {s.symbol}")
         seen.add(key)
+        if s.watched and s.symbol == settings.markets[s.market].benchmark_symbol:
+            raise ConfigError(
+                f"{symbols_path}: {s.market} {s.symbol} はベンチマークです。"
+                "settings.yaml の benchmark_symbol で持ち、監視銘柄には入れないでください"
+            )
     for e in events:
         if (e.market, e.symbol) not in seen:
             raise ConfigError(

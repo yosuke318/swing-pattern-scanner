@@ -1,10 +1,52 @@
-# 監視銘柄。監視をやめるときは削除せず watched: false にする（過去の判定ログと突き合わせるため）。
-# symbol は数字だけのコードでも必ず文字列で書く（"7203"）。
+# 監視銘柄。market（JP / US）で取得元が決まる（JP → J-Quants、US → Alpaca）。
+#
+# - 追加: 行を足してコミットする（GitHub の Web 編集でもよい）
+# - 除外: 行を消さず watched: false にする（過去の判定ログと突き合わせるため）
+# - symbol: 日本株は4桁のコードを文字列で書く（"7203"）。米国株はティッカー（"BRK.B" など）
+# - 指数ETF（1306 / SPY）はここに入れず、settings.yaml の benchmark_symbol で持つ
+#
+# 初期は流動性の高い大型株を少数。売買代金の下限（settings.yaml）を確実に超える銘柄から始める。
+
+# --- 日本株 ---
 - symbol: "7203"
   name: トヨタ自動車
   market: JP
   watched: true
+- symbol: "6758"
+  name: ソニーグループ
+  market: JP
+  watched: true
+- symbol: "8306"
+  name: 三菱UFJフィナンシャル・グループ
+  market: JP
+  watched: true
+- symbol: "8035"
+  name: 東京エレクトロン
+  market: JP
+  watched: true
+- symbol: "9984"
+  name: ソフトバンクグループ
+  market: JP
+  watched: true
+
+# --- 米国株 ---
+- symbol: AAPL
+  name: Apple
+  market: US
+  watched: true
+- symbol: MSFT
+  name: Microsoft
+  market: US
+  watched: true
 - symbol: NVDA
   name: NVIDIA
+  market: US
+  watched: true
+- symbol: AMZN
+  name: Amazon.com
+  market: US
+  watched: true
+- symbol: GOOGL
+  name: Alphabet（クラスA）
   market: US
   watched: true
