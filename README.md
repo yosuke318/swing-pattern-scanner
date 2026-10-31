@@ -62,6 +62,7 @@ uv run swing-scanner run --market US --date 2026-11-02   # 対象日を指定（
 - 移動平均は単純移動平均（ma5 / ma25 / ma75 / ma200）。
 - ゴールデンクロスは「前日 MA短期 ≤ MA長期、当日 MA短期 > MA長期」。既定の組は 25 / 75。`days_since_golden_cross` は直近の GD からの営業日数（当日 0）で、まだ GD が無ければ `inf`。
 - ATR14 は Wilder の平滑化（最初の14日の単純平均を初期値にする。TradingView の `ta.atr(14)` と同じ）。True Range は前日終値との窓を含む。
+- ADX14 / +DI / -DI は TradingView の `ta.dmi(14, 14)` と同じ定義（Wilder の平滑化）。値動きが全く無い期間は 0。
 - `atr14_pct` は ATR14 ÷ 終値の比率（0.023 = 2.3%）。`atr252_percentile` は当日を含む直近252営業日の `atr14_pct` の中での順位（0〜100）。
 - 計算期間が足りない値は NaN（評価不能）。上場から252営業日未満の銘柄は `atr252_percentile` が NaN になる。
 
