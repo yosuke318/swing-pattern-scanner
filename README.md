@@ -137,6 +137,23 @@ uv run swing-scanner run --market US --date 2026-11-02   # 対象日を指定（
 - パターンの `regimes` に当日の `vol_regime` / `trend_regime` が無ければ対象外（matched にせず、理由を残す）。レジームが評価不能のときも対象外。
 - 出口（基本設計書 4.6）は当日終値を基準にした目安。損切りは「直近スイング安値」と「終値 − k×ATR」の浅い方（スイング安値が無い・終値以上なら ATR 側）、利確は「終値 + m×ATR」。バックテストは `exit_plan` にエントリー価格を渡して計算し直す。
 
+### 除外フィルタ
+
+`src/swing_scanner/filters.py`。判定の後、通知の前に当てる。除外しても判定ログには残す。
+
+- 流動性: `trading_value_20d` が `markets.<市場>.min_trading_value_20d` 未満なら除外。20日分そろわず値が無いときも除外する。
+- 決算またぎ: 判定日から `max_holding_days` 営業日先までに `events.yaml` の決算日があれば除外（判定日当日を含む）。営業日は取引カレンダーで数える。
+- 市場環境: 指数ETFの `trend_regime` が downtrend のとき、`market_filter.mode` が annotate なら通知に注記、suppress なら除外。指数の区分が分からない日は注記だけ付ける。
+- 流動性と決算は `filters.liquidity` / `filters.earnings`、市場環境は `market_filter.mode: off` で個別に止められる。
+- 決算日の登録漏れ: 直近 `filters.earnings_registration_lookback_days`（90）日以内（未来を含む）に決算日の登録が無い監視銘柄を、通知で警告する。決算発表が済んだら、次の決算日を登録しておく。
+
+### 判定ログ（state/results/）
+
+- 判定した行はすべて残す（通知しなかったもの、除外したもの、レジーム対象外のものも）。
+- `excluded_reason` に通知しなかった理由（「レジーム対象外: …」「流動性: …」「決算: …」「市場環境: …」）を `; ` でつないで入れる。`breakdown` は条件ごとの key・op・閾値・実測値・合否（評価不能は null）・weight の JSON。
+- 同じ対象日を再実行したら、`(date, market, symbol, pattern_id, version)` が同じ行を置き換える（二重に追記しない）。
+- `commit_sha` とパターンのバージョンから、当時のコードと設定で判定を再現できる。
+
 ## 状態ファイルの書き込み
 
 日本株と米国株のジョブはどちらも同じ `state/` を書く。ファイルを市場別に分けず、ワークフローの `concurrency` を共通のグループにして直列化する。

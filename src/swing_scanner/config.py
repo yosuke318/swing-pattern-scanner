@@ -84,6 +84,15 @@ class NotificationSettings(_Model):
     line: ChannelSettings
 
 
+class FilterSettings(_Model):
+    """除外フィルタ（基本設計書 4.7）の ON/OFF。市場環境は market_filter.mode で切り替える。"""
+
+    liquidity: StrictBool
+    earnings: StrictBool
+    # 決算日の登録漏れの警告。直近この日数以内（未来を含む）に決算日の登録が無い監視銘柄を警告する
+    earnings_registration_lookback_days: PositiveInt
+
+
 class MarketFilterSettings(_Model):
     mode: Literal["off", "annotate", "suppress"]
 
@@ -115,6 +124,7 @@ class Settings(_Model):
     markets: dict[Market, MarketSettings]
     scoring: ScoringSettings
     notification: NotificationSettings
+    filters: FilterSettings
     market_filter: MarketFilterSettings
 
     @model_validator(mode="after")

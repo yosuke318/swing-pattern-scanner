@@ -40,6 +40,15 @@ notification:
   line:
     enabled: false
 
+# 除外フィルタ。除外しても判定ログには残す
+filters:
+  # trading_value_20d が markets.<市場>.min_trading_value_20d 未満なら除外
+  liquidity: true
+  # 判定日から max_holding_days 営業日以内に決算日（events.yaml）があれば除外
+  earnings: true
+  # 直近この日数以内（未来を含む）に決算日の登録が無い監視銘柄を、登録漏れとして通知で警告する
+  earnings_registration_lookback_days: 90
+
 market_filter:
   # 指数が downtrend のときの扱い。off: 何もしない / annotate: 通知に注記 / suppress: 通知を抑制
   mode: annotate
