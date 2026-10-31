@@ -66,6 +66,9 @@ uv run swing-scanner run --market US --date 2026-11-02   # 対象日を指定（
 - `atr14_pct` は ATR14 ÷ 終値の比率（0.023 = 2.3%）。`atr252_percentile` は当日を含む直近252営業日の `atr14_pct` の中での順位（0〜100）。
 - スイング高値は「高値が前 N 日より高く、後 N 日以上」の日（安値も同様）。N は固定で既定 3（`features/swing.py` の `SWING_WINDOW`、引数で変えてバックテストで比較する）。i 日目のスイングは i+N 日目に確定したものとして扱い、各行はその日までに確定したスイングだけを使う。
 - `hh_hl_structure` は直近2つのスイング高値・安値がともに切り上がれば uptrend、ともに切り下がれば downtrend、それ以外は unclear。
+- `vol_regime` は `atr252_percentile` が 20 以下で low、80 以上で high、それ以外は normal。
+- `trend_regime` は ADX（ADX14 ≥ 20 と ±DI の向き）・HH/HL 構造・MA の並び（終値・MA25・MA75）の3つのうち、2つ以上が同じ向きで逆向きが無ければその向き、それ以外は range（`features/regime.py` の `TREND_METHOD = "vote"`）。単独の方式（adx / structure / ma）にも切り替えられ、実データの該当日数を比べて決め直す。区分が連続 k 日続くまで切り替えないヒステリシスは既定で無し。
+- `trading_value_20d` は 20 日平均売買代金。API の売買代金（`trading_value` 列）を使い、無ければ終値 × 出来高。
 - 計算期間が足りない値は NaN（評価不能）。上場から252営業日未満の銘柄は `atr252_percentile` が NaN になる。
 
 ## 設定ファイルの決まり
