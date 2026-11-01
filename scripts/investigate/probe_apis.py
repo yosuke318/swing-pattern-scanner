@@ -11,6 +11,11 @@
 使い方:
   python scripts/investigate/probe_apis.py all       # 全項目
   python scripts/investigate/probe_apis.py jp-today  # 当日分が取れるか（引け後、時刻を変えて数回）
+
+J-Quants は v1 と v2 で列名が違う（v2 は O/H/L/C/Vo/Va、調整後は AdjO〜AdjVo、AdjFactor）ので、
+集計は API のバージョンに合わせて列を読み替える。TOPIX 四本値と決算発表予定日は v2 のパスを
+確かめられていないので、候補のパスを順に叩いて、どれが応答するかを記録する。
+Alpaca は IEX と SIP の両方のフィードで取り、出来高の比と、無料キーで SIP が通るかを記録する。
 """
 
 import argparse
@@ -36,6 +41,38 @@ US_SYMBOLS = ["AAPL", "NVDA", "GOOGL", "AMZN", "SPY"]
 SPLIT_WINDOWS = {
     "JP": [("6758", "2024-09-01", "2024-10-31")],  # ソニーグループ 1:5（2024-10-01）
     "US": [("NVDA", "2024-05-20", "2024-06-28")],  # NVIDIA 1:10（2024-06-10）
+}
+
+# J-Quants の株価四本値の列名（バージョン別）
+JQ_COLUMNS = {
+    "v1": {
+        "close": "Close",
+        "adj_close": "AdjustmentClose",
+        "factor": "AdjustmentFactor",
+        "volume": "Volume",
+        "adj_volume": "AdjustmentVolume",
+        "value": "TurnoverValue",
+    },
+    "v2": {
+        "close": "C",
+        "adj_close": "AdjC",
+        "factor": "AdjFactor",
+        "volume": "Vo",
+        "adj_volume": "AdjVo",
+        "value": "Va",
+    },
+}
+
+# パスを確かめられていないもの。候補を順に叩き、応答したものを記録する（v1 は既知のパス）
+JQ_CANDIDATE_PATHS = {
+    "topix": {
+        "v1": ["/indices/topix"],
+        "v2": ["/indices/bars/daily/topix", "/indices/topix", "/indices/bars/daily"],
+    },
+    "earnings_calendar": {
+        "v1": ["/fins/announcement"],
+        "v2": ["/equities/earnings-calendar", "/fins/announcement", "/fins/earnings-calendar"],
+    },
 }
 
 LOOKBACK_CALENDAR_DAYS = 450  # 約300営業日
@@ -136,12 +173,14 @@ class JQuants:
             self.headers = {"x-api-key": api_key}
             self.daily_path = "/equities/bars/daily"
             self.calendar_path = "/markets/calendar"
+            self.cols = JQ_COLUMNS["v2"]
         else:
             self.version = "v1"
             self.base = "https://api.jquants.com/v1"
             self.headers = {"Authorization": f"Bearer {self._v1_id_token()}"}
             self.daily_path = "/prices/daily_quotes"
             self.calendar_path = "/markets/trading_calendar"
+            self.cols = JQ_COLUMNS["v1"]
 
     def _v1_id_token(self) -> str:
         refresh = os.environ.get("JQUANTS_REFRESH_TOKEN")
@@ -183,6 +222,16 @@ class JQuants:
     def calendar(self, start: str, end: str) -> list[dict[str, Any]]:
         return self._get_all("jp_calendar", self.calendar_path, {"from": start, "to": end})
 
+    def try_paths(self, name: str, params: dict[str, str]) -> list[dict[str, Any]]:
+        """JQ_CANDIDATE_PATHS[name] の候補を順に叩き、各パスの応答を記録する。"""
+        results = []
+        for path in JQ_CANDIDATE_PATHS[name][self.version]:
+            url = f"{self.base}{path}?{urllib.parse.urlencode(params)}"
+            data = self.rec.get(f"jp_{name}_{path.strip('/').replace('/', '_')}", url, self.headers)
+            status = self.rec.requests[-1]["status"]
+            results.append({"path": path, "status": status, "profile": _profile(_rows(data))})
+        return results
+
 
 # --- Alpaca -----------------------------------------------------------------
 
@@ -199,7 +248,13 @@ class Alpaca:
         self.headers = {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
 
     def bars(
-        self, name: str, symbols: list[str], start: str, end: str, adjustment: str
+        self,
+        name: str,
+        symbols: list[str],
+        start: str,
+        end: str,
+        adjustment: str,
+        feed: str = "iex",
     ) -> dict[str, list[dict[str, Any]]]:
         params = {
             "symbols": ",".join(symbols),
@@ -207,7 +262,7 @@ class Alpaca:
             "start": start,
             "end": end,
             "adjustment": adjustment,
-            "feed": "iex",
+            "feed": feed,
             "limit": "10000",
         }
         out: dict[str, list[dict[str, Any]]] = {s: [] for s in symbols}
@@ -236,6 +291,7 @@ def probe_jp(rec: Recorder, today: dt.date) -> dict[str, Any]:
     start = (today - dt.timedelta(days=LOOKBACK_CALENDAR_DAYS)).isoformat()
     end = today.isoformat()
     result: dict[str, Any] = {"api_version": jq.version, "lookback": {}, "split": {}}
+    c = jq.cols
 
     for code in JP_SYMBOLS:
         n_before = len(rec.requests)
@@ -244,26 +300,30 @@ def probe_jp(rec: Recorder, today: dt.date) -> dict[str, Any]:
         prof = _profile(rows)
         prof["elapsed_sec"] = round(time.monotonic() - t0, 3)
         prof["requests"] = len(rec.requests) - n_before
-        # 分割・併合で調整がかかった行（v1 は AdjustmentFactor）
+        # 分割・併合で調整がかかった行
         prof["adjustment_factor_not_1"] = [
-            {"Date": r.get("Date"), "AdjustmentFactor": r.get("AdjustmentFactor")}
+            {"Date": r.get("Date"), c["factor"]: r.get(c["factor"])}
             for r in rows
-            if r.get("AdjustmentFactor") not in (None, 1, 1.0)
+            if r.get(c["factor"]) not in (None, 1, 1.0)
         ]
+        # 売買なしの日（v2 は四本値・出来高・売買代金が null で収録される）
+        prof["null_close_days"] = [r.get("Date") for r in rows if r.get(c["close"]) is None]
         prof["zero_or_null_volume_days"] = [
-            r.get("Date") for r in rows if not r.get("Volume") and not r.get("AdjustmentVolume")
+            r.get("Date") for r in rows if not r.get(c["volume"]) and not r.get(c["adj_volume"])
+        ]
+        prof["trading_value_present"] = sum(1 for r in rows if r.get(c["value"]) is not None)
+        # ストップ高・安（v2 の UL / LL）
+        prof["limit_days"] = [
+            {"Date": r.get("Date"), "UL": r.get("UL"), "LL": r.get("LL")}
+            for r in rows
+            if str(r.get("UL")) == "1" or str(r.get("LL")) == "1"
         ]
         result["lookback"][code] = prof
 
     for code, s, e in SPLIT_WINDOWS["JP"]:
         rows = jq.daily(f"jp_{code}_split", code, s, e)
-        result["split"][code] = [
-            {
-                k: r.get(k)
-                for k in ("Date", "Close", "AdjustmentClose", "AdjustmentFactor", "Volume")
-            }
-            for r in rows
-        ]
+        keys = ("Date", c["close"], c["adj_close"], c["factor"], c["volume"], c["adj_volume"])
+        result["split"][code] = [{k: r.get(k) for k in keys} for r in rows]
 
     far = jq.daily("jp_7203_far_past", "7203", FAR_PAST, end)
     result["earliest_available"] = _profile(far).get("first_date")
@@ -271,8 +331,14 @@ def probe_jp(rec: Recorder, today: dt.date) -> dict[str, Any]:
     cal = jq.calendar(start, (today + dt.timedelta(days=60)).isoformat())
     result["calendar"] = {
         "profile": _profile(cal),
-        "non_business_days_sample": [r for r in cal if str(r.get("HolidayDivision")) != "1"][:15],
+        "non_business_days_sample": [
+            r for r in cal if str(r.get("HolidayDivision", r.get("HolDiv"))) != "1"
+        ][:15],
     }
+
+    # TOPIX 四本値（ベンチマークを TOPIX にできるか）と決算発表予定日（events.yaml の自動化）
+    result["topix"] = jq.try_paths("topix", {"from": start, "to": end})
+    result["earnings_calendar"] = jq.try_paths("earnings_calendar", {})
     return result
 
 
@@ -295,7 +361,7 @@ def probe_us(rec: Recorder, today: dt.date) -> dict[str, Any]:
 
     n_before = len(rec.requests)
     t0 = time.monotonic()
-    bars = al.bars("us_lookback", US_SYMBOLS, start, end, "all")
+    bars = al.bars("us_lookback_iex", US_SYMBOLS, start, end, "split", feed="iex")
     result["lookback_batch"] = {
         "symbols": len(US_SYMBOLS),
         "elapsed_sec": round(time.monotonic() - t0, 3),
@@ -306,12 +372,37 @@ def probe_us(rec: Recorder, today: dt.date) -> dict[str, Any]:
         prof["zero_volume_days"] = [r.get("t") for r in rows if not r.get("v")]
         result["lookback"][sym] = prof
 
+    # 無料キーで SIP（全米の出来高）が通るか。通れば IEX との出来高の比を見る
+    sip = al.bars("us_lookback_sip", US_SYMBOLS, start, end, "split", feed="sip")
+    result["sip"] = {"status": rec.requests[-1]["status"], "volume_ratio_iex_to_sip": {}}
+    for sym in US_SYMBOLS:
+        sip_volume = {r.get("t"): r.get("v") for r in sip.get(sym, [])}
+        ratios = sorted(
+            r["v"] / sip_volume[r["t"]]
+            for r in bars.get(sym, [])
+            if r.get("v") and sip_volume.get(r.get("t"))
+        )
+        result["sip"]["volume_ratio_iex_to_sip"][sym] = {
+            "days": len(ratios),
+            "median": ratios[len(ratios) // 2] if ratios else None,
+            "min": ratios[0] if ratios else None,
+            "max": ratios[-1] if ratios else None,
+        }
+
     for sym, s, e in SPLIT_WINDOWS["US"]:
         raw = al.bars(f"us_{sym}_split_raw", [sym], s, e, "raw")[sym]
+        split = al.bars(f"us_{sym}_split_split", [sym], s, e, "split")[sym]
         adj = al.bars(f"us_{sym}_split_all", [sym], s, e, "all")[sym]
         result["split"][sym] = [
-            {"t": r.get("t"), "close_raw": r.get("c"), "close_all": a.get("c"), "v_raw": r.get("v")}
-            for r, a in zip(raw, adj, strict=False)
+            {
+                "t": r.get("t"),
+                "close_raw": r.get("c"),
+                "close_split": sp.get("c"),
+                "close_all": a.get("c"),
+                "v_raw": r.get("v"),
+                "v_split": sp.get("v"),
+            }
+            for r, sp, a in zip(raw, split, adj, strict=False)
         ]
 
     far = al.bars("us_SPY_far_past", ["SPY"], FAR_PAST, end, "all")["SPY"]

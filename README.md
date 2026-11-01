@@ -56,11 +56,20 @@ uv run swing-scanner run --market JP --data-dir data/ --calendar weekdays --dry-
 基本設計書 5.2 の手順を `src/swing_scanner/daily.py` の `run_daily` が順に実行し、手順ごとの件数と所要時間を標準エラーに出す。
 
 - 実行の先頭で取引カレンダー（日本株は J-Quants、米国株は Alpaca）を引き、対象日が休場日なら `runs.csv` に `skipped_holiday` を記録して正常終了する。休場日リストは自前で持たない。米国株は日本時間の翌朝に動くので、対象日は NY 時間の日付になる。
-- 銘柄単位の失敗（取得失敗、対象日のデータが無い、欠損・異常値）はその銘柄だけ外して続け、通知に警告として載せる（`runs.csv` は partial）。全銘柄の取得失敗、カレンダーの取得失敗、送信失敗は異常終了する。
+- 取得したデータは銘柄ごとに検証する（`src/swing_scanner/validation.py`）。次のものはその銘柄だけ判定から外して続け、通知に警告として載せる（`runs.csv` は partial）。
+  - API エラー（GET は通信エラー・タイムアウト・429・5xx のとき最大2回リトライ。待ち時間は 2・4 秒、429 は 10・20 秒。認証エラーなどはすぐ諦める）
+  - データが無い、列が無い、対象日の行が無い（データ未更新）、対象日に売買が無い
+  - 論理矛盾（高値 < 安値、高値 < 始値・終値、安値 > 始値・終値、価格 ≤ 0、出来高 < 0）
+- 次のものは判定に使ったまま、通知に警告として載せる。過去の売買なしの日（その行は除いて計算する）、取引カレンダーの立会日なのに行が無い日（歯抜け）、過去の出来高 0 の日、前日比 ±35% を超える値動き（ストップ高・安の日を除く。調整漏れの検知を兼ねる）。
+- 全銘柄の取得失敗、カレンダーの取得失敗、取得元の認証失敗、送信失敗は異常終了する。
 - 送ってから記録する。送信に失敗したら判定ログ・`notified.json`・`runs.csv` のどれも更新しない（再実行で送り直せる）。
 - 同じ対象日を再実行しても、判定ログは置き換えになり二重にならない。送信済みのシグナルはクールダウンで弾き、その日の通知を送り済みで新しいシグナルも無ければ通知は送らない。`--force` を付けると同じ日の分を送り直す。
 - 終了コードは正常（休場日を含む）が 0、異常が 1。
-- `--data-dir` を付けると日足を `<DIR>/<銘柄コード>.csv`（列: date / open / high / low / close / volume、任意で trading_value）から読む。ベンチマーク（1306 / SPY）の CSV も要る。API からの取得（[1-4] [1-5]）はまだ無いので、今は `--data-dir` が必須。`--calendar weekdays` は土日だけを休場とし、API の認証情報なしで試せる。
+- 日足は日本株を J-Quants、米国株を Alpaca から、毎回 `fetch.lookback_days` 営業日ぶん取る（保存しない）。
+  - J-Quants: 銘柄ごとに from / to で取り、分割・併合を調整した列（v2 は `AdjO`〜`AdjVo`）を使う。売買代金は `Va`。4桁の銘柄コードは末尾に 0 を付けて5桁にする。ライトプランの 60 リクエスト/分に収めるため、リクエストの間隔を 1.1 秒あける。
+  - Alpaca: `adjustment=split` で分割を調整し、`feed=sip`（全米の出来高）で取る。無料キーで SIP が通らなければ環境変数（GitHub Actions ではリポジトリ変数）`APCA_DATA_FEED=iex` にする。売買代金は VWAP × 出来高。
+  - 認証は最初の取得のときに行う（休場日には API を使わない）。認証情報が無い・認証に失敗したときは異常終了する。
+- `--data-dir` を付けると日足を API ではなく `<DIR>/<銘柄コード>.csv`（列: date / open / high / low / close / volume、任意で trading_value）から読む。ベンチマーク（1306 / SPY）の CSV も要る。`--calendar weekdays` は土日だけを休場とし、API の認証情報なしで試せる。
 - 認証情報は環境変数から読む。J-Quants は `JQUANTS_API_KEY`（v2）、または `JQUANTS_REFRESH_TOKEN` か `JQUANTS_MAIL` + `JQUANTS_PASSWORD`（v1）。Alpaca は `APCA_API_KEY_ID` + `APCA_API_SECRET_KEY`。通知の認証情報は下の「通知」を参照。
 
 ## 指標計算の決まり
@@ -194,7 +203,8 @@ uv run swing-scanner run --market JP --data-dir data/ --calendar weekdays --dry-
 | 日本株 | 平日 19:17（暫定。J-Quants の更新時刻を調べて見直す） | `17 10 * * 1-5` |
 | 米国株 | 火〜土 07:43（米国の引けは夏時間 5:00 / 冬時間 6:00） | `43 22 * * 1-5` |
 
-- 定期実行は、リポジトリ変数 `DAILY_ENABLED` を `true` にしたときだけ動く（Settings → Secrets and variables → Actions → Variables）。データ取得（[1-4] [1-5]）がそろうまでは止めておく。
+- 定期実行は、リポジトリ変数 `DAILY_ENABLED` を `true` にしたときだけ動く（Settings → Secrets and variables → Actions → Variables）。手動実行で取得から通知まで通ることを確かめてから有効にする。
+- リポジトリ変数 `APCA_DATA_FEED` で Alpaca のフィードを変えられる（既定は sip）。
 - 手動実行（Actions → Daily scan → Run workflow）で、市場・対象日・送り直し（force）・dry-run を指定できる。cron の抜けや遅延で届かなかった日はここから再実行する。
 - 両市場のジョブは `concurrency: state` で直列に動く（同じ `state/` を書くため）。異常終了したときは state を書いていないので、コミットもしない。
 - 失敗すると GitHub から失敗通知メールが届く（定期実行の失敗は、ワークフローを最後に変更したユーザーに届く）。

@@ -19,18 +19,7 @@ class OhlcvSource(Protocol):
 
 
 class SourceUnavailable(Exception):
-    """取得元がまだ使えない（未実装・設定不足）。銘柄単位の失敗ではなく、実行全体を止める。"""
-
-
-class UnavailableSource:
-    def __init__(self, market: Market) -> None:
-        self.market = market
-
-    def fetch(self, symbol: str, start: dt.date, end: dt.date) -> pd.DataFrame:
-        name = {"JP": "日本株（J-Quants、[1-4]）", "US": "米国株（Alpaca、[1-5]）"}[self.market]
-        raise SourceUnavailable(
-            f"{name}の取得はまだ実装されていません。--data-dir で CSV を渡してください"
-        )
+    """取得元が使えない（認証情報が無い・認証に失敗した）。銘柄単位の失敗ではなく、実行全体を止める。"""
 
 
 class CsvSource:
@@ -46,6 +35,14 @@ class CsvSource:
 
 
 def source_for(market: Market, data_dir: Path | None = None) -> OhlcvSource:
+    """日本株は J-Quants、米国株は Alpaca。data_dir を渡すと CSV から読む。"""
     if data_dir is not None:
         return CsvSource(data_dir)
-    return UnavailableSource(market)
+    # 取得元のモジュールがこのモジュールを読むので、循環しないようここで読み込む
+    if market == "JP":
+        from swing_scanner.sources.jquants import JQuantsDailySource
+
+        return JQuantsDailySource()
+    from swing_scanner.sources.alpaca import AlpacaDailySource
+
+    return AlpacaDailySource()

@@ -48,12 +48,11 @@ from swing_scanner.state import (
     upsert_results,
 )
 from swing_scanner.trading_calendar import TargetDay, TradingCalendar, resolve_target
-from swing_scanner.validation import validate_ohlcv
+from swing_scanner.validation import ValidationResult, failed, validate_ohlcv
 
 # 取得開始日の目安。lookback_days 営業日を祝日込みで確実に含むよう、暦日に換算して余裕を持たせる
 CALENDAR_DAYS_PER_BUSINESS_DAY = 1.6
-# クールダウンと決算またぎを数えるために取る取引カレンダーの範囲（対象日の前後、暦日）
-SESSIONS_BEFORE_DAYS = 40
+# 取引カレンダーは取得期間（歯抜けの検証・クールダウン）から対象日の先（決算またぎ）まで取る
 SESSIONS_AFTER_DAYS = 45
 
 
@@ -181,6 +180,7 @@ class Fetched:
     benchmark: pd.DataFrame | None
     failed: list[str]
     warnings: list[str]
+    benchmark_failed: bool = False
 
 
 @dataclass(frozen=True)
@@ -193,36 +193,54 @@ class DailyResult:
 
 
 def _fetch_one(
-    source: OhlcvSource, symbol: str, day: dt.date, lookback: int
-) -> tuple[pd.DataFrame | None, str | None]:
+    source: OhlcvSource,
+    symbol: str,
+    day: dt.date,
+    lookback: int,
+    sessions: Sequence[dt.date],
+) -> ValidationResult:
     start = day - dt.timedelta(days=math.ceil(lookback * CALENDAR_DAYS_PER_BUSINESS_DAY))
     try:
         df = source.fetch(symbol, start, day)
     except (ApiError, OSError, ValueError) as e:
-        return None, f"取得に失敗しました: {e}"
-    df = df[df["date"] <= day].tail(lookback).reset_index(drop=True) if "date" in df else df
-    reason = validate_ohlcv(df, day)
-    return (None, reason) if reason else (df, None)
+        return failed("error", f"取得に失敗しました: {e}")
+    if "date" in df:
+        df = df[df["date"] <= day].tail(lookback).reset_index(drop=True)
+    return validate_ohlcv(df, day, sessions)
 
 
 def fetch_all(
-    source: OhlcvSource, symbols: Sequence[Symbol], benchmark: str, day: dt.date, lookback: int
+    source: OhlcvSource,
+    symbols: Sequence[Symbol],
+    benchmark: str,
+    day: dt.date,
+    lookback: int,
+    sessions: Sequence[dt.date] = (),
 ) -> Fetched:
-    """手順4: 監視銘柄とベンチマークの日足を取り、検証する。失敗した銘柄は外して警告に積む。"""
+    """手順4: 監視銘柄とベンチマークの日足を取り、検証する（[1-6]）。
+
+    検証に通らない銘柄は外して警告に積む。通った銘柄の注意事項（歯抜け・値動きのジャンプなど）も
+    警告に積むが、判定には使う。
+    """
     frames: dict[str, pd.DataFrame] = {}
-    failed: list[str] = []
+    failed_symbols: list[str] = []
     warnings: list[str] = []
     for s in symbols:
-        df, reason = _fetch_one(source, s.symbol, day, lookback)
-        if df is None:
-            failed.append(s.symbol)
-            warnings.append(f"{s.symbol} {s.name}: {reason}（判定から外しました）")
+        result = _fetch_one(source, s.symbol, day, lookback, sessions)
+        label = f"{s.symbol} {s.name}"
+        if result.ok:
+            frames[s.symbol] = result.data
         else:
-            frames[s.symbol] = df
-    bench, reason = _fetch_one(source, benchmark, day, lookback)
-    if bench is None:
-        warnings.append(f"ベンチマーク {benchmark}: {reason}（相対強度と市場環境を判定できません）")
-    return Fetched(frames, bench, failed, warnings)
+            failed_symbols.append(s.symbol)
+            warnings.append(f"{label}: {result.reason}（判定から外しました）")
+        warnings += [f"{label}: {w}" for w in result.warnings]
+    bench = _fetch_one(source, benchmark, day, lookback, sessions)
+    if not bench.ok:
+        warnings.append(
+            f"ベンチマーク {benchmark}: {bench.reason}（相対強度と市場環境を判定できません）"
+        )
+    warnings += [f"ベンチマーク {benchmark}: {w}" for w in bench.warnings]
+    return Fetched(frames, bench.data, failed_symbols, warnings, benchmark_failed=not bench.ok)
 
 
 def run_daily(
@@ -254,9 +272,10 @@ def run_daily(
         return DailyResult(target, "skipped_holiday")
     day = target.date
     log(f"[手順2] {market} 対象日 {day}")
+    lookback = settings.fetch.lookback_days
     sessions = sorted(
         calendar.sessions(
-            day - dt.timedelta(days=SESSIONS_BEFORE_DAYS),
+            day - dt.timedelta(days=math.ceil(lookback * CALENDAR_DAYS_PER_BUSINESS_DAY)),
             day + dt.timedelta(days=SESSIONS_AFTER_DAYS),
         )
     )
@@ -270,7 +289,8 @@ def run_daily(
     # 4. 取得・検証
     with _step(log, "手順4 取得・検証") as info:
         benchmark_symbol = settings.markets[market].benchmark_symbol
-        fetched = fetch_all(source, symbols, benchmark_symbol, day, settings.fetch.lookback_days)
+        past_sessions = [d for d in sessions if d <= day]
+        fetched = fetch_all(source, symbols, benchmark_symbol, day, lookback, past_sessions)
         info["result"] = f"{len(fetched.frames)}/{len(symbols)}銘柄"
     if not fetched.frames:
         raise DailyError("全銘柄の取得に失敗しました: " + " / ".join(fetched.warnings))
@@ -351,7 +371,8 @@ def run_daily(
         )
         for j in judgements
     ]
-    status: RunStatus = "partial" if fetched.warnings else "success"
+    # 判定から外した銘柄があれば partial（注意事項だけなら success）
+    status: RunStatus = "partial" if fetched.failed or fetched.benchmark_failed else "success"
     if not dry_run:
         upsert_results(state_dir, rows)
         append_run(
