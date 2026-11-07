@@ -3,11 +3,14 @@ import datetime as dt
 import sys
 from pathlib import Path
 
-from swing_scanner.config import ConfigError, load_config
+from swing_scanner.backtest.cache import DEFAULT_CACHE_DIR, OhlcvCache
+from swing_scanner.backtest.report import DEFAULT_REPORT_DIR, summarize, write_report
+from swing_scanner.backtest.runner import run_backtest
+from swing_scanner.config import ConfigError, Symbol, load_config
 from swing_scanner.daily import DailyError, run_daily
 from swing_scanner.notify.message import email_body, subject
 from swing_scanner.notify.send import NotifyError
-from swing_scanner.provenance import commit_sha
+from swing_scanner.provenance import commit_sha, has_uncommitted_changes
 from swing_scanner.sources.base import SourceUnavailable, source_for
 from swing_scanner.trading_calendar import CalendarError, WeekdayCalendar, calendar_from_env
 
@@ -62,6 +65,48 @@ def _run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _backtest(args: argparse.Namespace) -> int:
+    """バックテスト。過去データを .cache/ に保存し、レポートを reports/backtest/ に出す。"""
+    try:
+        config = load_config(args.config_dir)
+        pattern = config.pattern(args.pattern, args.version)
+        if args.symbols:
+            known = {s.symbol: s for s in config.symbols if s.market == args.market}
+            symbols = [
+                known.get(code) or Symbol(symbol=code, name=code, market=args.market, watched=False)
+                for code in args.symbols.split(",")
+            ]
+        else:
+            symbols = config.watched_symbols(args.market)
+    except (ConfigError, ValueError) as e:
+        print(f"設定エラー: {e}", file=sys.stderr)
+        return 1
+    if args.start > args.end:
+        print("--start は --end 以前の日付にしてください", file=sys.stderr)
+        return 1
+    cache = OhlcvCache(source_for(args.market, args.data_dir), args.cache_dir)
+    try:
+        result = run_backtest(
+            config, pattern, args.market, symbols, args.start, args.end, cache, args.refresh_cache
+        )
+    except SourceUnavailable as e:
+        print(f"バックテストを中断しました: {e}", file=sys.stderr)
+        return 1
+    now = dt.datetime.now(dt.UTC)
+    command = "swing-scanner " + " ".join(args.argv)
+    commit = commit_sha() + ("（未コミットの変更あり）" if has_uncommitted_changes() else "")
+    md, trades_csv = write_report(result, config, command, commit, now, args.out_dir)
+    s = summarize(result)
+    win_rate = "—" if s.win_rate is None else f"{s.win_rate * 100:.1f}%"
+    print(f"シグナル {s.signals}件、トレード {s.trades}件、勝率 {win_rate}")
+    print(f"レポート: {md}")
+    print(f"トレード一覧: {trades_csv}")
+    failed = [d.symbol for d in result.data if d.error]
+    if failed:
+        print(f"データを使えなかった銘柄: {', '.join(failed)}（レポートの「データ」を参照）")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="swing-scanner")
     parser.add_argument("--config-dir", type=Path, default=Path("config"))
@@ -97,7 +142,26 @@ def main(argv: list[str] | None = None) -> int:
         help="weekdays: API を使わず土日だけを休場とする（動作確認用）",
     )
     run.set_defaults(func=_run)
+
+    bt = sub.add_parser("backtest", help="過去データでパターンを検証する")
+    bt.add_argument("--pattern", required=True, help="pattern_id")
+    bt.add_argument("--version", type=int, help="省略すると active なバージョン")
+    bt.add_argument("--market", choices=["JP", "US"], required=True)
+    bt.add_argument("--start", type=dt.date.fromisoformat, required=True, help="評価期間の開始日")
+    bt.add_argument("--end", type=dt.date.fromisoformat, required=True, help="評価期間の終了日")
+    bt.add_argument("--symbols", help="カンマ区切りの銘柄コード。省略すると監視中の銘柄")
+    bt.add_argument(
+        "--refresh-cache", action="store_true", help="キャッシュを使わず API から取り直す"
+    )
+    bt.add_argument(
+        "--data-dir", type=Path, help="日足を API ではなく <DIR>/<銘柄コード>.csv から読む"
+    )
+    bt.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    bt.add_argument("--out-dir", type=Path, default=DEFAULT_REPORT_DIR)
+    bt.set_defaults(func=_backtest)
+
     args = parser.parse_args(argv)
+    args.argv = list(argv) if argv is not None else sys.argv[1:]
     return args.func(args)
 
 

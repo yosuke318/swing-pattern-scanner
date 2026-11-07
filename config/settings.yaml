@@ -59,3 +59,10 @@ filters:
 market_filter:
   # 指数が downtrend のときの扱い。off: 何もしない / annotate: 通知に注記 / suppress: 通知を抑制
   mode: annotate
+
+# バックテスト。想定コストは片道（買い・売りそれぞれ）の比率。手数料・スプレッド・スリッページを含む。
+# 短期売買は回数が多くコストが効くので 0 にしない（暫定値）
+backtest:
+  cost_per_side:
+    JP: 0.001
+    US: 0.0005

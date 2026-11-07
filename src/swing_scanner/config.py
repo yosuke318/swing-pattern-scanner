@@ -132,6 +132,19 @@ class FeatureSettings(_Model):
         return self
 
 
+class BacktestSettings(_Model):
+    """バックテストの想定コスト。手数料・スプレッド・スリッページを片道の比率で持つ。"""
+
+    cost_per_side: dict[Market, Annotated[Number, Field(ge=0, lt=1)]]
+
+    @model_validator(mode="after")
+    def _all_markets(self) -> BacktestSettings:
+        missing = {"JP", "US"} - set(self.cost_per_side)
+        if missing:
+            raise ValueError(f"backtest.cost_per_side に {sorted(missing)} がありません")
+        return self
+
+
 class Settings(_Model):
     fetch: FetchSettings
     features: FeatureSettings
@@ -140,6 +153,7 @@ class Settings(_Model):
     notification: NotificationSettings
     filters: FilterSettings
     market_filter: MarketFilterSettings
+    backtest: BacktestSettings
 
     @model_validator(mode="after")
     def _all_markets_present(self) -> Settings:

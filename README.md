@@ -222,6 +222,23 @@ Secrets（Settings → Secrets and variables → Actions → Secrets）に登録
 | `MAIL_USER` / `MAIL_APP_PASSWORD` / `MAIL_TO` | Gmail の送信元・アプリ パスワード・送り先 |
 | `LINE_CHANNEL_ACCESS_TOKEN` / `LINE_TO` | LINE Messaging API（`notification.line.enabled: true` のときだけ要る） |
 
+## バックテスト
+
+```bash
+uv run swing-scanner backtest --pattern golden_cross_uptrend --market JP --start 2023-01-01 --end 2026-09-30
+uv run swing-scanner backtest --pattern ma_pullback --version 1 --market US --start 2023-01-01 --end 2026-09-30 --symbols NVDA,AAPL
+```
+
+過去データに、日次処理と同じ関数（指標計算 `compute_features`、判定 `evaluate`、除外フィルタ `apply_filters`）を当て直す（`src/swing_scanner/backtest/`）。
+
+- 過去データは API から取って `.cache/ohlcv/<市場>/<銘柄>.parquet` に保存し、要求した範囲を覆っていれば2回目以降はキャッシュから読む。`--refresh-cache` で取り直す（調整済み価格なので、株式分割の後は取り直す）。`--data-dir` で CSV からも読める。
+- 評価期間の前に、指標が出そろうまでの助走期間（`fetch.lookback_days` 営業日相当）を取る。
+- 通知対象になる条件は日次処理と同じ（レジーム・必須条件・しきい値・除外フィルタ・クールダウン）。同じ銘柄 × パターンで保有中なら新規に入らない。
+- 仮想トレード（基本設計書 4.6）: シグナル翌営業日の寄り付きで入る（窓開けなら見送り）。損切り・利確はエントリー価格を基準に計算し直す。同じ日に損切りと利確の両方に届いたら損切りが先。損切り価格以下で寄り付いたら寄り付きで決済。`max_holding_days` 営業日たったら翌営業日の寄り付きで決済。
+- 想定コストは `settings.yaml` の `backtest.cost_per_side`（片道、市場別）を買い・売りの両方にかける。
+- レポートは `reports/backtest/<実行日時>_<pattern_id>_v<n>.md` とトレード一覧の CSV。実行条件（コマンド、コミット、パターン定義、指標・フィルタの設定、コスト、データの取得日時）を全部書くので、同じ条件で再現できる。未コミットの変更があるときはコミットの横にそう書く。
+- 今の監視銘柄で過去を検証するので生存バイアスがある。数字は実態より良く出る方向にずれうる。
+
 ## 状態ファイルの書き込み
 
 日本株と米国株のジョブはどちらも同じ `state/` を書く。ファイルを市場別に分けず、ワークフローの `concurrency` を共通のグループにして直列化する。
