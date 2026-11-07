@@ -6,6 +6,7 @@ from pathlib import Path
 from swing_scanner.backtest.cache import DEFAULT_CACHE_DIR, OhlcvCache
 from swing_scanner.backtest.report import DEFAULT_REPORT_DIR, summarize, write_report
 from swing_scanner.backtest.runner import run_backtest
+from swing_scanner.backtest.walk_forward import run_walk_forward, write_walk_forward
 from swing_scanner.config import ConfigError, Symbol, load_config
 from swing_scanner.daily import DailyError, run_daily
 from swing_scanner.notify.message import email_body, subject
@@ -70,14 +71,7 @@ def _backtest(args: argparse.Namespace) -> int:
     try:
         config = load_config(args.config_dir)
         pattern = config.pattern(args.pattern, args.version)
-        if args.symbols:
-            known = {s.symbol: s for s in config.symbols if s.market == args.market}
-            symbols = [
-                known.get(code) or Symbol(symbol=code, name=code, market=args.market, watched=False)
-                for code in args.symbols.split(",")
-            ]
-        else:
-            symbols = config.watched_symbols(args.market)
+        symbols = _symbols_for(config, args)
     except (ConfigError, ValueError) as e:
         print(f"設定エラー: {e}", file=sys.stderr)
         return 1
@@ -105,6 +99,75 @@ def _backtest(args: argparse.Namespace) -> int:
     if failed:
         print(f"データを使えなかった銘柄: {', '.join(failed)}（レポートの「データ」を参照）")
     return 0
+
+
+def _symbols_for(config, args: argparse.Namespace) -> list[Symbol]:
+    if not args.symbols:
+        return config.watched_symbols(args.market)
+    known = {s.symbol: s for s in config.symbols if s.market == args.market}
+    return [
+        known.get(code) or Symbol(symbol=code, name=code, market=args.market, watched=False)
+        for code in args.symbols.split(",")
+    ]
+
+
+def _walk_forward(args: argparse.Namespace) -> int:
+    """ウォークフォワード検証。学習期間で閾値と出口を選び、その後ろの評価期間で成績を測る。"""
+    try:
+        config = load_config(args.config_dir)
+        pattern = config.pattern(args.pattern, args.version)
+        symbols = _symbols_for(config, args)
+    except (ConfigError, ValueError) as e:
+        print(f"設定エラー: {e}", file=sys.stderr)
+        return 1
+    cache = OhlcvCache(source_for(args.market, args.data_dir), args.cache_dir)
+    try:
+        result = run_walk_forward(
+            config,
+            pattern,
+            args.market,
+            symbols,
+            args.start,
+            args.end,
+            cache,
+            args.train_months,
+            args.test_months,
+            args.step_months,
+            args.refresh_cache,
+        )
+    except ValueError as e:
+        print(f"期間の指定が不正です: {e}", file=sys.stderr)
+        return 1
+    except SourceUnavailable as e:
+        print(f"検証を中断しました: {e}", file=sys.stderr)
+        return 1
+    now = dt.datetime.now(dt.UTC)
+    command = "swing-scanner " + " ".join(args.argv)
+    commit = commit_sha() + ("（未コミットの変更あり）" if has_uncommitted_changes() else "")
+    md, trades_csv = write_walk_forward(result, command, commit, now, args.out_dir)
+    for i, w in enumerate(result.windows, 1):
+        train, test = w.train_summary, w.test_summary
+        picked = w.params.label() if w.params else "選べない（件数不足）"
+        counts = f"学習 {train.trades if train else 0}件 / 評価 {test.trades if test else 0}件"
+        print(f"窓{i} {w.window.test_start}〜{w.window.test_end}: {picked}（{counts}）")
+    print(f"レポート: {md}")
+    print(f"評価期間のトレード一覧: {trades_csv}")
+    return 0
+
+
+def _add_backtest_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--pattern", required=True, help="pattern_id")
+    parser.add_argument("--version", type=int, help="省略すると active なバージョン")
+    parser.add_argument("--market", choices=["JP", "US"], required=True)
+    parser.add_argument("--symbols", help="カンマ区切りの銘柄コード。省略すると監視中の銘柄")
+    parser.add_argument(
+        "--refresh-cache", action="store_true", help="キャッシュを使わず API から取り直す"
+    )
+    parser.add_argument(
+        "--data-dir", type=Path, help="日足を API ではなく <DIR>/<銘柄コード>.csv から読む"
+    )
+    parser.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_REPORT_DIR)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -144,21 +207,23 @@ def main(argv: list[str] | None = None) -> int:
     run.set_defaults(func=_run)
 
     bt = sub.add_parser("backtest", help="過去データでパターンを検証する")
-    bt.add_argument("--pattern", required=True, help="pattern_id")
-    bt.add_argument("--version", type=int, help="省略すると active なバージョン")
-    bt.add_argument("--market", choices=["JP", "US"], required=True)
+    _add_backtest_args(bt)
     bt.add_argument("--start", type=dt.date.fromisoformat, required=True, help="評価期間の開始日")
     bt.add_argument("--end", type=dt.date.fromisoformat, required=True, help="評価期間の終了日")
-    bt.add_argument("--symbols", help="カンマ区切りの銘柄コード。省略すると監視中の銘柄")
-    bt.add_argument(
-        "--refresh-cache", action="store_true", help="キャッシュを使わず API から取り直す"
-    )
-    bt.add_argument(
-        "--data-dir", type=Path, help="日足を API ではなく <DIR>/<銘柄コード>.csv から読む"
-    )
-    bt.add_argument("--cache-dir", type=Path, default=DEFAULT_CACHE_DIR)
-    bt.add_argument("--out-dir", type=Path, default=DEFAULT_REPORT_DIR)
     bt.set_defaults(func=_backtest)
+
+    wf = sub.add_parser("walk-forward", help="学習期間と評価期間を分けて検証する")
+    _add_backtest_args(wf)
+    wf.add_argument(
+        "--start", type=dt.date.fromisoformat, required=True, help="最初の学習期間の開始日"
+    )
+    wf.add_argument(
+        "--end", type=dt.date.fromisoformat, required=True, help="最後の評価期間の終了日"
+    )
+    wf.add_argument("--train-months", type=int, default=24, help="学習期間（か月、既定 24）")
+    wf.add_argument("--test-months", type=int, default=12, help="評価期間（か月、既定 12）")
+    wf.add_argument("--step-months", type=int, default=12, help="窓をずらす幅（か月、既定 12）")
+    wf.set_defaults(func=_walk_forward)
 
     args = parser.parse_args(argv)
     args.argv = list(argv) if argv is not None else sys.argv[1:]

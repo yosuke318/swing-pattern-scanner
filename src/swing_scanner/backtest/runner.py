@@ -115,7 +115,28 @@ def _sessions(dates: Sequence[dt.date]) -> list[dt.date]:
     return sorted(dates) + ext
 
 
-def run_backtest(
+@dataclass
+class Prepared:
+    """期間全体の指標と、レジーム・必須条件を満たした日（スコアはしきい値の前）。
+
+    パターンの条件とレジームだけで決まる部分を先に計算しておき、しきい値や出口を変えた試行
+    （ウォークフォワードの探索、[4-3]）では simulate だけを繰り返す。
+    """
+
+    market: Market
+    symbols: list[Symbol]
+    data: list[SymbolData]
+    benchmark: SymbolData
+    features: dict[str, pd.DataFrame]
+    # 銘柄 → [(行番号, 日付, スコア)]
+    candidates: dict[str, list[tuple[int, dt.date, float]]]
+    bench_trend: dict[dt.date, object]
+    sessions: list[dt.date]
+    # (銘柄, 行番号, max_holding_days) → 除外の理由
+    _filter_cache: dict[tuple[str, int, int], tuple[str, ...]] = field(default_factory=dict)
+
+
+def prepare(
     config: Config,
     pattern: Pattern,
     market: Market,
@@ -124,13 +145,11 @@ def run_backtest(
     end: dt.date,
     cache: OhlcvCache,
     refresh: bool = False,
-) -> BacktestResult:
+) -> Prepared:
+    """start〜end（と、その前の助走期間）のデータを読み、指標を計算し、判定の候補日を集める。"""
     settings = config.settings
     warmup = math.ceil(settings.fetch.lookback_days * CALENDAR_DAYS_PER_BUSINESS_DAY)
     fetch_start = start - dt.timedelta(days=warmup)
-    threshold = config.score_threshold(pattern)
-    cost = settings.backtest.cost_per_side[market]
-    cooldown_days = settings.notification.cooldown_business_days
 
     bench_symbol = settings.markets[market].benchmark_symbol
     bench_df, bench_info = _load(cache, market, bench_symbol, fetch_start, end, refresh)
@@ -141,66 +160,107 @@ def run_backtest(
         bench_trend = dict(zip(bench_features["date"], bench_features["trend_regime"], strict=True))
         sessions = _sessions(list(bench_df["date"]))
 
-    trades: list[Trade] = []
-    signals: list[SignalRecord] = []
     data: list[SymbolData] = []
-    excluded: dict[str, int] = {}
-    cooled_down = 0
+    features: dict[str, pd.DataFrame] = {}
+    candidates: dict[str, list[tuple[int, dt.date, float]]] = {}
     for symbol in symbols:
         df, info = _load(cache, market, symbol.symbol, fetch_start, end, refresh)
         data.append(info)
         if df is None:
             continue
-        features = compute_features(df, bench_df, settings.features)
+        f = compute_features(df, bench_df, settings.features)
+        features[symbol.symbol] = f
+        found = []
+        for i, row in f.iterrows():
+            if start <= row["date"] <= end:
+                ev = evaluate(pattern, row)
+                if not ev.skip_reason:
+                    found.append((int(i), row["date"], ev.score))
+        candidates[symbol.symbol] = found
+    return Prepared(
+        market, list(symbols), data, bench_info, features, candidates, bench_trend, sessions
+    )
+
+
+def simulate(
+    config: Config,
+    prepared: Prepared,
+    pattern: Pattern,
+    start: dt.date,
+    end: dt.date,
+    data_end: dt.date | None = None,
+) -> BacktestResult:
+    """start〜end のシグナルを通知対象の条件で選び、仮想トレードにする。
+
+    pattern は prepare に渡したものと条件・レジームが同じで、しきい値や出口だけが違ってよい。
+    data_end を渡すと、それより後の足を使わない（トレードは data_end の終値で閉じる）。
+    ウォークフォワードの学習期間で、評価期間の値動きが探索に漏れないようにするため。
+    """
+    settings = config.settings
+    market = prepared.market
+    threshold = config.score_threshold(pattern)
+    cost = settings.backtest.cost_per_side[market]
+    cooldown_days = settings.notification.cooldown_business_days
+    sessions = prepared.sessions or None
+
+    trades: list[Trade] = []
+    signals: list[SignalRecord] = []
+    excluded: dict[str, int] = {}
+    cooled_down = 0
+    for symbol in prepared.symbols:
+        features = prepared.features.get(symbol.symbol)
+        if features is None:
+            continue
+        bars = features if data_end is None else features[features["date"] <= data_end]
         last_notified: dt.date | None = None
         open_until: dt.date | None = None
-        for i, row in features.iterrows():
-            day = row["date"]
-            if not (start <= day <= end):
+        for i, day, score in prepared.candidates[symbol.symbol]:
+            if not (start <= day <= end) or score < threshold:
                 continue
-            ev = evaluate(pattern, row)
-            if ev.skip_reason or ev.score < threshold:
-                continue
-            outcome = apply_filters(
-                config,
-                market,
-                symbol.symbol,
-                day,
-                pattern,
-                row,
-                bench_trend.get(day),
-                sessions or None,
-            )
-            if outcome.is_excluded:
-                for reason in outcome.excluded:
-                    key = reason.split(":")[0]
-                    excluded[key] = excluded.get(key, 0) + 1
+            row = features.iloc[i]
+            key = (symbol.symbol, i, pattern.exit.max_holding_days)
+            if key not in prepared._filter_cache:
+                outcome = apply_filters(
+                    config,
+                    market,
+                    symbol.symbol,
+                    day,
+                    pattern,
+                    row,
+                    prepared.bench_trend.get(day),
+                    sessions,
+                )
+                prepared._filter_cache[key] = outcome.excluded
+            reasons = prepared._filter_cache[key]
+            if reasons:
+                for reason in reasons:
+                    k = reason.split(":")[0]
+                    excluded[k] = excluded.get(k, 0) + 1
                 continue
             if last_notified is not None and (
-                business_days_between(last_notified, day, sessions or None) < cooldown_days
+                business_days_between(last_notified, day, sessions) < cooldown_days
             ):
                 cooled_down += 1
                 continue
             last_notified = day
             if open_until is not None and day < open_until:
-                signals.append(SignalRecord(symbol.symbol, day, ev.score, "holding"))
+                signals.append(SignalRecord(symbol.symbol, day, score, "holding"))
                 continue
-            swing_low = scalar(row.get("swing_low_price"))
             result = simulate_trade(
-                features,
-                int(i),
+                bars,
+                i,
                 pattern.exit,
                 float(row["atr14"]),
-                swing_low,
+                scalar(row.get("swing_low_price")),
                 cost,
                 symbol.symbol,
                 pattern.pattern_id,
                 pattern.version,
             )
             if isinstance(result, str):
-                signals.append(SignalRecord(symbol.symbol, day, ev.score, result))
+                signals.append(SignalRecord(symbol.symbol, day, score, result))
                 continue
-            signals.append(SignalRecord(symbol.symbol, day, ev.score))
+            signals.append(SignalRecord(symbol.symbol, day, score))
             trades.append(result)
             open_until = result.exit_date
     return BacktestResult(
@@ -208,13 +268,27 @@ def run_backtest(
         market=market,
         start=start,
         end=end,
-        symbols=list(symbols),
+        symbols=prepared.symbols,
         cost_per_side=cost,
         threshold=threshold,
         trades=trades,
         signals=signals,
-        data=data,
-        benchmark=bench_info,
+        data=prepared.data,
+        benchmark=prepared.benchmark,
         excluded=excluded,
         cooled_down=cooled_down,
     )
+
+
+def run_backtest(
+    config: Config,
+    pattern: Pattern,
+    market: Market,
+    symbols: Sequence[Symbol],
+    start: dt.date,
+    end: dt.date,
+    cache: OhlcvCache,
+    refresh: bool = False,
+) -> BacktestResult:
+    prepared = prepare(config, pattern, market, symbols, start, end, cache, refresh)
+    return simulate(config, prepared, pattern, start, end)

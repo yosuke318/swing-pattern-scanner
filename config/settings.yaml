@@ -66,3 +66,11 @@ backtest:
   cost_per_side:
     JP: 0.001
     US: 0.0005
+  # ウォークフォワード検証で学習期間に探索する出口の候補（増やすほど過学習しやすい）。
+  # スコアのしきい値の候補は、パターンの weight の組み合わせで取りうる 50 点以上の点数
+  walk_forward:
+    stop_atr_mult: [1.0, 1.5, 2.0]
+    target_atr_mult: [2.0, 3.0, 4.0]
+    max_holding_days: [5, 10, 15]
+    # これ未満のトレード数の結果は信用しない
+    min_trades: 20

@@ -8,12 +8,13 @@
 
 import csv
 import datetime as dt
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 import yaml
 
-from swing_scanner.backtest.runner import BacktestResult
+from swing_scanner.backtest.runner import BacktestResult, SignalRecord
 from swing_scanner.backtest.trades import Trade
 from swing_scanner.config import Config
 
@@ -37,12 +38,15 @@ class Summary:
 
 
 def summarize(result: BacktestResult) -> Summary:
-    trades = result.trades
+    return summarize_trades(result.trades, result.signals)
+
+
+def summarize_trades(trades: Sequence[Trade], signals: Sequence[SignalRecord] = ()) -> Summary:
     returns = sorted(t.net_return for t in trades)
     gains = sum(r for r in returns if r > 0)
     losses = -sum(r for r in returns if r < 0)
     skipped: dict[str, int] = {}
-    for s in result.signals:
+    for s in signals:
         if s.skip_reason:
             skipped[s.skip_reason] = skipped.get(s.skip_reason, 0) + 1
     reasons: dict[str, int] = {}
@@ -54,7 +58,7 @@ def summarize(result: BacktestResult) -> Summary:
         return sum(values) / len(values) if values else None
 
     return Summary(
-        signals=len(result.signals),
+        signals=len(signals),
         trades=n,
         skipped=skipped,
         wins=sum(1 for r in returns if r > 0),
