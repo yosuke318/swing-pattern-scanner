@@ -132,6 +132,33 @@ class FeatureSettings(_Model):
         return self
 
 
+class WalkForwardSettings(_Model):
+    """ウォークフォワード検証（[4-3]）で学習期間に探索する出口の候補と、信用する最低件数。
+
+    スコアのしきい値の候補は、パターンの weight の組み合わせで取りうる点数から作る。
+    """
+
+    stop_atr_mult: Annotated[list[PositiveFloat], Field(min_length=1)]
+    target_atr_mult: Annotated[list[PositiveFloat], Field(min_length=1)]
+    max_holding_days: Annotated[list[PositiveInt], Field(min_length=1)]
+    # これ未満のトレード数の結果は信用しない（学習期間では選ばず、評価期間ではサンプル不足と表示）
+    min_trades: PositiveInt
+
+
+class BacktestSettings(_Model):
+    """バックテストの想定コスト（手数料・スプレッド・スリッページを片道の比率で）と探索の候補。"""
+
+    cost_per_side: dict[Market, Annotated[Number, Field(ge=0, lt=1)]]
+    walk_forward: WalkForwardSettings
+
+    @model_validator(mode="after")
+    def _all_markets(self) -> BacktestSettings:
+        missing = {"JP", "US"} - set(self.cost_per_side)
+        if missing:
+            raise ValueError(f"backtest.cost_per_side に {sorted(missing)} がありません")
+        return self
+
+
 class Settings(_Model):
     fetch: FetchSettings
     features: FeatureSettings
@@ -140,6 +167,7 @@ class Settings(_Model):
     notification: NotificationSettings
     filters: FilterSettings
     market_filter: MarketFilterSettings
+    backtest: BacktestSettings
 
     @model_validator(mode="after")
     def _all_markets_present(self) -> Settings:
